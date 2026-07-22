@@ -1,0 +1,269 @@
+Dépendances internes code.js :
+
+ouvrirClasseur()
+  └── (utilisée par) → chargerDonnees, verifierR9Journee, validerRegleR9,                       validerTourneeDepuisUI, calculerKPIJour,                       verifierRepriseEmballagesJour, sauvegarderPlan,
+                       diagnosticComplet
+
+lireOngletBrut(wb, nomOnglet)
+  └── (utilisée par) → chargerDonnees, lireDistancier, lireReglesDech,
+                       lireChargements, lireTournees, lireOffsets,
+                       chargerDistancier, chargerCreneauxMagasins,
+                       calculerKPIJour, verifierRepriseEmballagesJour,
+                       diagnosticComplet
+
+ecrireOnglet(nomOnglet, donnees)  └── appelle → ouvrirClasseur
+
+heureVersMinutes(heure)
+  └── (utilisée par) → validerContraintesChargement,                       validerContraintesLivraison,                       validerLivraisonFraisNuit,
+                       calculerPlanningAvecPauses,
+                       calculerPlanningTournee,                       magasinDisponible (indirectement via validerTournee)
+
+minutesVersHeure(minutes)
+  └── (utilisée par) → magasinDisponible, calculerPlanningAvecPauses,
+                       calculerPlanningTournee, verifierR9Journee,
+                       validerRegleR9
+
+estNuit(heureMinutes)
+  └── appelle → (rien)  └── (utilisée par) → validerContraintesChargement,
+                       validerContraintesLivraison,
+                       validerLivraisonFraisNuit
+
+estJour(heureMinutes)
+  └── appelle → estNuit  └── (utilisée par) → validerContraintesChargement
+
+getTempsDecharge(nbUT)
+  └── (utilisée par) → calculerPlanningAvecPauses,
+                       calculerPlanningTournee (via getTempsDechargeLocal),                       validerTournee
+
+creerRegistreOccupation()  └── (utilisée par) → validerTournee
+
+magasinDisponible(magasin, debutMin, finMin, registre, tourneeIdCourante)
+  └── appelle → minutesVersHeure  └── (utilisée par) → validerTournee
+
+enregistrerOccupation(magasin, debutMin, finMin, tourneeId, registre)
+  └── (utilisée par) → validerTournee
+
+libererOccupation(magasin, debutMin, tourneeId, registre)  └── (aucun appel interne détecté)
+
+validerCapaciteRemorque(flux, capaciteMax)
+  └── (utilisée par) → validerTournee
+
+validerCompatibiliteMarchandises(flux)  └── (utilisée par) → validerTournee
+
+validerContraintesChargement(flux, heureChargement)
+  └── appelle → heureVersMinutes, estJour  └── (utilisée par) → validerTournee
+
+validerLivraisonFraisNuit(marchandise, heureArrivee, lieu)
+  └── appelle → heureVersMinutes, estNuit
+  └── (utilisée par) → validerTourneeRegleR9,                       calculerPlanningTournee
+
+validerTourneeRegleR9(arretsPlanifies, chargementsParArret)
+  └── appelle → validerLivraisonFraisNuit
+
+calculerPlanningAvecPauses(heureDepart, arrets, distancier)
+  └── appelle → heureVersMinutes, minutesVersHeure, getTempsDecharge  └── (utilisée par) → validerTournee
+
+calculerPlanningTournee(heureDepart, arrets, distMap, reglesDech, chargementsMap, lieuDepart)
+  └── appelle → heureVersMinutes, minutesVersHeure,                getTempsDecharge (via getTempsDechargeLocal),                validerLivraisonFraisNuit  └── (utilisée par) → verifierR9Journee, validerRegleR9
+
+validerContraintesLivraison(marchandise, heureArrivee, creneauMagasin)
+  └── appelle → heureVersMinutes, estNuit
+  └── (utilisée par) → validerTournee
+
+validerRepriseEmballages(magasinsActifs, tourneesPropres)
+  └── (utilisée par) → verifierRepriseEmballagesJour
+
+calculerCoutModule(module, kmTotal, minutesTotal)
+  └── (aucun appel interne)
+
+calculerKPICoutParUT(modules, affretements)  └── (utilisée par) → calculerKPIJour
+
+validerTournee(params)  └── appelle → validerCapaciteRemorque,                validerCompatibiliteMarchandises,
+                validerContraintesChargement,
+                calculerPlanningAvecPauses,
+                creerRegistreOccupation,
+                magasinDisponible,
+                enregistrerOccupation,                getTempsDecharge,                validerContraintesLivraison  └── (utilisée par) → validerTourneeDepuisUI
+
+─── FONCTIONS PRINCIPALES (point d'entrée) ───
+
+chargerDonnees()
+  └── appelle → ouvrirClasseur, lireOngletBrut
+
+verifierR9Journee(jour)
+  └── appelle → ouvrirClasseur, lireChargements, lireTournees,                lireDistancier, lireReglesDech, lireOffsets,                minutesVersHeure, calculerPlanningTournee
+
+validerRegleR9(params)
+  └── appelle → ouvrirClasseur, lireDistancier, lireReglesDech,
+                calculerPlanningTournee
+
+validerTourneeDepuisUI(params)  └── appelle → ouvrirClasseur, chargerDistancier,                chargerCreneauxMagasins, validerTournee
+
+calculerKPIJour(jour)
+  └── appelle → ouvrirClasseur, lireOngletBrut, calculerKPICoutParUT
+
+verifierRepriseEmballagesJour(jour)
+  └── appelle → ouvrirClasseur, lireOngletBrut, lireTournees,
+                validerRepriseEmballages
+
+sauvegarderPlan(donnees)
+  └── appelle → ecrireOnglet
+
+diagnosticComplet()
+  └── appelle → ouvrirClasseur, lireOngletBrut, chargerDonnees
+
+─── CHARGEURS DE DONNÉES ───
+
+lireDistancier(wb)       → appelle lireOngletBrutlireReglesDech(wb)       → appelle lireOngletBrut
+lireChargements(wb)      → appelle lireOngletBrut
+lireTournees(wb)         → appelle lireOngletBrut
+lireOffsets(wb)          → appelle lireOngletBrut
+chargerDistancier(wb)    → appelle lireOngletBrut
+chargerCreneauxMagasins(wb, jour) → appelle lireOngletBrut
+
+Dépendances internes outil_v7.html :
+
+onclick="chargerDistancier()"            → btn-distancier (ligne 859)
+onclick="bascuerVue('flux')"             → btn-vue-flux (ligne 939)
+onclick="basculerVue('modules')"         → btn-vue-modules (ligne 940)
+onclick="basculerVue('remorques')"       → btn-vue-remorques (ligne 941)
+onclick="basculerVue('magasins')"        → btn-vue-magasins (ligne 942)onclick="toggleMsPanel('marchandise')"   → ms-btn-marchandise (ligne 892)
+onclick="toggleMsPanel('magasin')"       → ms-btn-magasin (ligne 907)
+onclick="toggleMsPanel('entrepot')"      → ms-btn-entrepot (ligne 914)
+onclick="toggleMsPanel('zoneLiv')"       → ms-btn-zoneLiv (ligne 928)
+onclick="toggleMsPanel('zoneLog')"       → ms-btn-zoneLog (ligne 921)
+onclick="onJourChange(this.value)"       → sel-jour (ligne 879)
+onclick="onMarchandiseChange(this.value)"→ form-marchandise (ligne 1181)
+onclick="fermerModal('modal-creneaux')"  → modal-creneaux (ligne 1144)
+onclick="fermerModal('modal-navette')"   → modal-navette (ligne 1232)
+onclick="fermerModal('modal-navette-flux')"→ modal-navette-flux (ligne 1274)
+onclick="fermerListeFlux()"              → modal-liste-flux (ligne 1127)
+onclick="majInfoNavette()"               → nav-dep / nav-arr (lignes 1242, 1246)
+
+
+basculerVue(vue)  └── appelle → [toggle visibilité panels]
+  └── utilisée par → btn-vue-flux, btn-vue-modules,                     btn-vue-remorques, btn-vue-magasins
+
+toggleMsPanel(type)
+  └── appelle → [affiche/masque ms-panel-{type}]
+  └── utilisée par → ms-btn-marchandise, ms-btn-magasin,                     ms-btn-entrepot, ms-btn-zoneLiv, ms-btn-zoneLog
+
+chargerDistancier()
+  └── déclenche → input-distancier (file input click)
+  └── utilisée par → btn-distancier
+
+chargerCartographie()
+  └── déclenche → input-cartographie (file input click)
+  └── utilisée par → btn-cartographie
+
+fermerModal(modalId)
+  └── appelle → [masque modal-overlay par id]
+  └── utilisée par → modal-creneaux, modal-navette, modal-navette-flux
+
+fermerListeFlux()  └── appelle → [masque modal-liste-flux]  └── utilisée par → modal-liste-flux (onclick fond)
+
+onMarchandiseChange(valeur)
+  └── appelle → [filtre affichage flux par marchandise]
+  └── utilisée par → form-marchandise (onchange)
+
+majInfoNavette()
+  └── lit → nav-dep, nav-arr, nav-ut, nav-marc  └── met à jour → nav-dist-info  └── utilisée par → nav-dep (onchange), nav-arr (onchange)
+
+─── TOOLBAR ───────────────────────────────────────────────
+
+toolbar  ├── toolbar-left  │     ├── [input-excel]      → déclenché par btn "Charger Excel"
+  │     ├── [input-distancier] → déclenché par btn-distancier
+  │     ├── [input-cartographie]→ déclenché par btn-cartographie
+  │     ├── [input-session]    → import JSON  │     └── sel-jour           → onJourChange()  └── toolbar-right
+        ├── btn-vue-flux       → basculerVue('flux')
+        ├── btn-vue-modules    → basculerVue('modules')
+        ├── btn-vue-remorques  → basculerVue('remorques')
+        └── btn-vue-magasins   → basculerVue('magasins')
+
+─── FILTRES MULTI-SELECT ──────────────────────────────────
+
+ms-btn-marchandise → toggleMsPanel('marchandise') → ms-panel-marchandisems-btn-magasin     → toggleMsPanel('magasin')     → ms-panel-magasin
+ms-btn-entrepot    → toggleMsPanel('entrepot')    → ms-panel-entrepot
+ms-btn-zoneLiv     → toggleMsPanel('zoneLiv')     → ms-panel-zoneLiv
+ms-btn-zoneLog     → toggleMsPanel('zoneLog')     → ms-panel-zoneLog
+
+─── ZONE PRINCIPALE ────────────────────────────────────────
+
+main  ├── left-content  │     ├── panneau-flux-planning  │     │     ├── pfp-header  │     │     │     ├── pfp-header-title
+  │     │     │     └── pfp-header-stats  │     │     │           ├── stat-ut-total
+  │     │     │           ├── stat-ut-chargees  │     │     │           ├── stat-ut-restantes
+  │     │     │           └── stat-ut-taux  │     │     ├── pfp-timeline-wrapper  │     │     │     ├── pfp-time-axis  │     │     │     └── pfp-rows-container
+  │     │     └── pfp-unplaced-zone  │     │           └── pfp-unplaced-label  │     ├── zone-gantt
+  │     │     ├── gantt-modules        → basculerVue('modules')
+  │     │     │     └── gantt-modules-contenu
+  │     │     ├── gantt-remorques      → basculerVue('remorques')  │     │     │     └── gantt-remorques-contenu
+  │     │     └── gantt-magasins       → basculerVue('magasins')
+  │     │           └── gantt-magasins-contenu
+  │     ├── panel-tournees  │     │     └── panel-tournees-contenu
+  │     └── panel-remorques-bilan
+  │           └── panel-remorques-bilan-contenu
+  └── validation-panel
+        └── vp-select-tournee → [déclenche validation tournée]              ├── vp-checklist              ├── vp-alertes-erreurs              ├── vp-alertes-avertissements
+              └── vp-alertes-infos
+
+─── KPI DASHBOARD ─────────────────────────────────────────
+
+kpi-dashboard
+  ├── kpi-input-a, kpi-input-bsec, kpi-input-bfrais  ├── kpi-input-cjour, kpi-input-cnuit
+  ├── kpi-cout-ut, kpi-taux-remplissage
+  ├── kpi-taux-dep, kpi-pct-km-vide  ├── kpi-cout-carbone-ut  ├── kpi-input-co2km, kpi-input-prixco2
+  ├── kpi-detail-arrow → toggle kpi-detail-table  └── kpi-detail-table
+
+─── MODALS ─────────────────────────────────────────────────
+
+modal-liste-flux          → fermerListeFlux()
+  ├── panneau-flux-header  │     └── flux-compteur-modal  └── flux-liste
+
+modal-creneaux            → fermerModal('modal-creneaux')
+  ├── modal-creneaux-titre  └── modal-creneaux-body
+
+modal-flux                → [ajout flux]
+  ├── form-entrepot
+  ├── form-magasin
+  ├── form-marchandise     → onMarchandiseChange()
+  ├── form-ut  └── form-jour
+
+modal-ut-fraction         → [assignation UT]
+  ├── ut-fraction-info  ├── ut-fraction-input  └── ut-fraction-hint
+
+modal-navette             → fermerModal('modal-navette')
+  ├── nav-dep              → majInfoNavette()
+  ├── nav-arr              → majInfoNavette()
+  ├── nav-ut  ├── nav-marc
+  └── nav-dist-info
+
+modal-navette-flux        → fermerModal('modal-navette-flux')
+  ├── navfx-dep  ├── navfx-arr            → navfx-panel-arr
+  ├── navfx-ut
+  ├── navfx-max-label  └── navfx-info
+
+modal-tournee             → [ajout tournée]
+  ├── ajout-module-label  ├── ajout-heure  ├── ajout-new-cap  └── ajout-new-adm
+
+modal-detail-tournee      → [détail tournée]
+  ├── detail-tournee-id  ├── detail-meta-tournee
+  ├── detail-flux-liste  └── detail-etapes-table
+
+─── OVERLAY ASYNC ──────────────────────────────────────────
+
+af-overlay               → [affiché pendant calculs longs]
+  ├── af-phase           → texte phase en cours
+  ├── af-bar             → barre de progression  ├── af-pct             → pourcentage  └── af-eta             → temps restant
+
+loading-overlay          → [chargement initial]
+  ├── loading-msg  └── loading-detail
+
+gantt-tooltip            → [tooltip hover Gantt]
+
+Élément HTML,Événement,Fonction code.js appelée
+input-excel,onchange,chargerDonnees()
+sel-jour,onchange,verifierR9Journee(jour)
+vp-select-tournee,onchange,validerTourneeDepuisUI(params)
+"Bouton ""Tout valider""",onclick,validerTourneeDepuisUI() pour chaque tournée
+input-distancier,onchange,chargerDistancier()
+"Bouton ""Optimiser""",onclick,[algorithme LNS via validerTournee()]

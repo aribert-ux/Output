@@ -1,0 +1,13 @@
+{
+  "name": "auchan-transport-planification",
+  "version": "7.1.0",
+  "description": "Outil de planification transport Auchan — lecture depuis Excel local",
+  "main": "code.js",
+  "scripts": {
+    "diagnostic": "node -e \"const c = require('./code'); console.log(c.diagnosticComplet());\""
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5",
+    "express": "^4.18.2"
+  }
+}
