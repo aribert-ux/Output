@@ -49,6 +49,11 @@
     }
     #toolbar-left  { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
     #toolbar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-left: auto; }
+    #autosave-badge { display:none; font-size:10px; font-weight:700; color:#388E3C; background:#E8F5E9; border:1px solid #A5D6A7; border-radius:3px; padding:2px 7px; white-space:nowrap; cursor:default; }
+    #autosave-restore-banner { display:none; background:#FFF8E1; border-bottom:2px solid #FFE082; padding:7px 16px; font-size:12px; font-weight:500; color:#5D4037; align-items:center; gap:10px; }
+    #autosave-restore-banner button { font-size:11px; padding:3px 10px; border-radius:3px; border:none; cursor:pointer; font-weight:600; }
+    #autosave-restore-banner .btn-restore { background:#4CAF50; color:#fff; }
+    #autosave-restore-banner .btn-ignore  { background:#E0E0E0; color:#555; }
     .toolbar-group { display: flex; align-items: center; gap: 5px; }
     .toolbar-label { font-size: 10px; font-weight: 600; color: #78909C; text-transform: uppercase; letter-spacing: 0.4px; }
 
@@ -881,6 +886,14 @@
   </div>
 </div>
 
+<!-- ══ BANDEAU RESTAURATION AUTO-SAVE ══ -->
+<div id="autosave-restore-banner">
+  <span>💾</span>
+  <span id="autosave-restore-text"></span>
+  <button class="btn-restore" onclick="restaurerAutoSave()">Restaurer</button>
+  <button class="btn-ignore"  onclick="ignorerAutoSave()">Ignorer</button>
+</div>
+
 <!-- ══ TOOLBAR ══ -->
 <div id="toolbar">
   <!-- ── Filtres (gauche) ── -->
@@ -946,6 +959,7 @@
   </div>
   <!-- ── Actions (droite) ── -->
   <div id="toolbar-right">
+    <span id="autosave-badge" title="Auto-sauvegarde active"></span>
     <div class="toolbar-group">
       <button class="btn btn-primary"   id="btn-vue-flux"      onclick="basculerVue('flux')">⚡ Flux</button>
       <button class="btn btn-secondary" id="btn-vue-modules"   onclick="basculerVue('modules')">📦 Modules</button>
@@ -2913,8 +2927,9 @@ function afficherEtatSansFichier() {
   var existant = document.getElementById('welcome-banner');
   if (existant) existant.remove();
 
-  var okExcel      = !!AppState.wb;
-  var okDistancier = !!AppState.wbDistancier;
+  var okExcel        = !!AppState.wb;
+  var okDistancier   = !!AppState.wbDistancier;
+  var okCartographie = !!(AppState.cartographiePlages && Object.keys(AppState.cartographiePlages).length > 0);
 
   var banner = document.createElement('div');
   banner.id = 'welcome-banner';
@@ -2924,24 +2939,25 @@ function afficherEtatSansFichier() {
     'background:#fff','border-radius:12px',
     'box-shadow:0 4px 24px rgba(0,0,0,0.18)',
     'padding:40px 48px','text-align:center',
-    'z-index:100','max-width:460px','width:90%'
+    'z-index:100','max-width:480px','width:90%'
   ].join(';');
 
-  function ligne(ok, label, onclick) {
-    var couleur = ok ? '#2E7D32' : '#B71C1C';
-    var icone   = ok ? '✅' : '⬜';
+  function ligne(ok, label, onclick, optionnel) {
+    var icone   = ok ? '✅' : (optionnel ? '🟡' : '⬜');
+    var suffix  = optionnel ? ' <span style="font-size:10px;color:#90A4AE">(optionnel)</span>' : '';
     var btnHtml = ok
       ? '<span style="display:inline-block;padding:8px 20px;background:#E8F5E9;color:#2E7D32;border-radius:6px;font-size:13px;font-weight:600">' + icone + ' ' + label + ' chargé</span>'
-      : '<button class="btn btn-warning" onclick="' + onclick + '" style="font-size:13px;padding:8px 20px">' + icone + ' ' + label + '</button>';
+      : '<button class="btn ' + (optionnel ? 'btn-secondary' : 'btn-warning') + '" onclick="' + onclick + '" style="font-size:13px;padding:8px 20px">' + icone + ' ' + label + suffix + '</button>';
     return '<div style="margin-bottom:14px">' + btnHtml + '</div>';
   }
 
   banner.innerHTML = [
     '<div style="font-size:42px;margin-bottom:14px">📋</div>',
     '<div style="font-size:17px;font-weight:700;color:#1A3A5C;margin-bottom:6px">Chargement requis</div>',
-    '<div style="font-size:12px;color:#78909C;margin-bottom:24px">Les deux fichiers doivent être chargés avant de planifier.</div>',
-    ligne(okExcel,      'Fichier Excel (données)', 'chargerFichierExcel()'),
-    ligne(okDistancier, 'Distancier REFLEX.xlsx',  'chargerDistancier()')
+    '<div style="font-size:12px;color:#78909C;margin-bottom:24px">Les deux premiers fichiers sont requis. La cartographie est recommandée pour afficher les créneaux de livraison.</div>',
+    ligne(okExcel,        'Fichier Excel Flux',    'chargerFichierExcel()',  false),
+    ligne(okDistancier,   'Distancier REFLEX.xlsx', 'chargerDistancier()',   false),
+    ligne(okCartographie, 'Cartographie magasins',  'chargerCartographie()', true)
   ].join('');
   document.body.appendChild(banner);
 }
@@ -4140,13 +4156,37 @@ function supprimerTourneeVide(modId, tid) {
   if (AppState.tourneeOverrides) delete AppState.tourneeOverrides[tid];
   if (AppState.tourneeRemorque)  delete AppState.tourneeRemorque[tid];
   afficherToast('🗑️ Tournée ' + tid + ' supprimée', 'info');
-  if (AppState.donnees) rendreGantt(AppState.donnees);
+  if (AppState.donnees) {
+    rendrePlanningFlux(AppState.donnees);
+    rendreGantt(AppState.donnees);
+    if (AppState.vueActive === 'remorques') rendreGanttRemorques(AppState.donnees);
+    if (AppState.vueActive === 'magasins')  rendreGanttMagasins(AppState.donnees);
+  }
 }
 
 function supprimerTourneeNavette(modId, tid) {
-  // Vide le plan (les navettes redeviennent disponibles dans la liste)
+  // Pour chaque navette avec marchandises dans cette tournée, remettre le flux dérivé en attente
+  (AppState.planLocal[tid] || []).forEach(function(flux) {
+    if (flux.isNavette && flux._navFluxId) {
+      var fnId = flux._navFluxId;
+      Object.keys(AppState.planLocal).forEach(function(t2) {
+        if (t2 === tid) return;
+        var plan = AppState.planLocal[t2] || [];
+        for (var i = plan.length - 1; i >= 0; i--) {
+          if (plan[i]._navFluxId === fnId && plan[i]._isFluxNavettise) {
+            var derFlux = plan.splice(i, 1)[0];
+            if (!AppState.fluxDerivesNavette) AppState.fluxDerivesNavette = [];
+            if (!AppState.fluxDerivesNavette.some(function(d) { return d._navFluxId === fnId; })) {
+              AppState.fluxDerivesNavette.push(derFlux);
+            }
+          }
+        }
+      });
+    }
+  });
+  // Vide le plan (la navette redevient disponible dans navpairs)
   AppState.planLocal[tid] = [];
-  // Puis supprime la tournée devenue vide
+  // Supprime la tournée devenue vide
   supprimerTourneeVide(modId, tid);
 }
 
@@ -7796,14 +7836,13 @@ function toggleKPIDetail() {
 // ══════════════════════════════════════════════════════
 //  SAUVEGARDE
 // ══════════════════════════════════════════════════════
-function sauvegarderPlanUI() {
-  var nbFlux = Object.values(AppState.planLocal).reduce(function(s, arr) { return s + arr.length; }, 0);
-  if (nbFlux === 0 && AppState.fluxLocaux.length === 0 && AppState.modules.length === 0) {
-    afficherToast('Aucun flux planifié à exporter', 'avertissement');
-    return;
-  }
-  var session = {
-    version:          '2.4',
+var _autoSaveTimer  = null;
+var _autoSaveActive = false;
+var _LS_KEY = 'auchan_transport_autosave';
+
+function _buildSessionObject() {
+  return {
+    version:          '2.5',
     exportedAt:       new Date().toISOString(),
     jourActif:        AppState.jourActif,
     planLocal:        AppState.planLocal,
@@ -7815,10 +7854,105 @@ function sauvegarderPlanUI() {
     tourneesLocales:  AppState.tourneesLocales  || [],
     tourneeRemorque:  AppState.tourneeRemorque,
     tourneeOverrides: AppState.tourneeOverrides || {},
-    navettesLibres:       AppState.navettesLibres       || [],
-    fluxNavettes:         AppState.fluxNavettes         || [],
-    fluxDerivesNavette:   AppState.fluxDerivesNavette   || []
+    navettesLibres:      AppState.navettesLibres      || [],
+    fluxNavettes:        AppState.fluxNavettes        || [],
+    fluxDerivesNavette:  AppState.fluxDerivesNavette  || [],
+    shiftSplits:         AppState.shiftSplits         || {},
+    pauseOverrides:      AppState.pauseOverrides       || {},
+    kpiParams:           AppState.kpiParams           || {}
   };
+}
+
+function _autoSave() {
+  try {
+    var nbFlux = Object.values(AppState.planLocal).reduce(function(s, a) { return s + a.length; }, 0);
+    if (nbFlux === 0 && AppState.modules.length === 0) return;
+    localStorage.setItem(_LS_KEY, JSON.stringify(_buildSessionObject()));
+    var now  = new Date();
+    var hhmm = ('0'+now.getHours()).slice(-2) + ':' + ('0'+now.getMinutes()).slice(-2);
+    var badge = document.getElementById('autosave-badge');
+    if (badge) { badge.textContent = '💾 ' + hhmm; badge.title = 'Auto-sauvegardé à ' + hhmm; badge.style.display = 'inline-block'; }
+  } catch(e) {}
+}
+
+function demarrerAutoSave() {
+  if (_autoSaveActive) return;
+  _autoSaveActive = true;
+  _autoSave();
+  _autoSaveTimer = setInterval(_autoSave, 60000);
+}
+
+function verifierAutoSave() {
+  try {
+    var saved = localStorage.getItem(_LS_KEY);
+    if (!saved) return;
+    var session = JSON.parse(saved);
+    if (!session.planLocal) return;
+    var nbFlux = Object.values(session.planLocal).reduce(function(s, a) { return s + a.length; }, 0);
+    var nbMod  = (session.modules || []).length;
+    if (nbFlux === 0 && nbMod === 0) return;
+    var dt = session.exportedAt ? new Date(session.exportedAt).toLocaleString('fr-FR') : '?';
+    var banner = document.getElementById('autosave-restore-banner');
+    var txt    = document.getElementById('autosave-restore-text');
+    if (banner && txt) {
+      txt.textContent = 'Auto-sauvegarde du ' + dt + ' — ' + nbFlux + ' flux, ' + nbMod + ' modules';
+      banner.style.display = 'flex';
+    }
+  } catch(e) {}
+}
+
+function restaurerAutoSave() {
+  try {
+    var saved = localStorage.getItem(_LS_KEY);
+    if (!saved) return;
+    var session = JSON.parse(saved);
+    AppState.planLocal        = session.planLocal        || {};
+    AppState.fluxLocaux       = session.fluxLocaux       || [];
+    AppState.modules          = session.modules          || [];
+    if (session.moduleM0) AppState.moduleM0 = session.moduleM0;
+    AppState.modulesOffsets   = session.modulesOffsets   || {};
+    AppState.remoquesLocales  = session.remoquesLocales  || [];
+    AppState.tourneesLocales  = session.tourneesLocales  || [];
+    AppState.tourneeRemorque  = session.tourneeRemorque  || {};
+    AppState.tourneeOverrides = session.tourneeOverrides || {};
+    AppState.navettesLibres      = session.navettesLibres      || [];
+    AppState.fluxNavettes        = session.fluxNavettes        || [];
+    AppState.fluxDerivesNavette  = session.fluxDerivesNavette  || [];
+    if (session.shiftSplits)    AppState.shiftSplits    = session.shiftSplits;
+    if (session.pauseOverrides) AppState.pauseOverrides = session.pauseOverrides;
+    if (session.kpiParams)      AppState.kpiParams      = session.kpiParams;
+    if (session.jourActif) {
+      AppState.jourActif = session.jourActif;
+      var selJour = document.getElementById('sel-jour');
+      if (selJour) selJour.value = session.jourActif;
+    }
+    ignorerAutoSave();
+    var nbFlux = Object.values(AppState.planLocal).reduce(function(s, a) { return s + a.length; }, 0);
+    afficherToast('✅ Auto-sauvegarde restaurée — ' + nbFlux + ' flux · ' + AppState.modules.length + ' modules', 'succes');
+    demarrerAutoSave();
+    if (AppState.donnees) {
+      rendrePlanningFlux(AppState.donnees);
+      rendreGantt(AppState.donnees);
+      if (AppState.vueActive === 'remorques') rendreGanttRemorques(AppState.donnees);
+      if (AppState.vueActive === 'magasins')  rendreGanttMagasins(AppState.donnees);
+    }
+  } catch(err) {
+    afficherToast('❌ Erreur restauration : ' + err.message, 'erreur');
+  }
+}
+
+function ignorerAutoSave() {
+  var banner = document.getElementById('autosave-restore-banner');
+  if (banner) banner.style.display = 'none';
+}
+
+function sauvegarderPlanUI() {
+  var nbFlux = Object.values(AppState.planLocal).reduce(function(s, arr) { return s + arr.length; }, 0);
+  if (nbFlux === 0 && AppState.fluxLocaux.length === 0 && AppState.modules.length === 0) {
+    afficherToast('Aucun flux planifié à exporter', 'avertissement');
+    return;
+  }
+  var session = _buildSessionObject();
   var blob = new Blob([JSON.stringify(session, null, 2)], { type: 'application/json' });
   var url  = URL.createObjectURL(blob);
   var a    = document.createElement('a');
@@ -7830,6 +7964,7 @@ function sauvegarderPlanUI() {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   afficherToast('✅ Session exportée — ' + nbFlux + ' flux · ' + AppState.modules.length + ' modules', 'succes');
+  demarrerAutoSave();
 }
 
 function exporterCSV() {
@@ -7892,6 +8027,9 @@ function onSessionImportee(input) {
       AppState.navettesLibres       = session.navettesLibres       || [];
       AppState.fluxNavettes         = session.fluxNavettes         || [];
       AppState.fluxDerivesNavette   = session.fluxDerivesNavette   || [];
+      if (session.shiftSplits)    AppState.shiftSplits    = session.shiftSplits;
+      if (session.pauseOverrides) AppState.pauseOverrides = session.pauseOverrides;
+      if (session.kpiParams)      AppState.kpiParams      = session.kpiParams;
       if (session.jourActif) {
         AppState.jourActif = session.jourActif;
         var selJour = document.getElementById('sel-jour');
@@ -7899,6 +8037,7 @@ function onSessionImportee(input) {
       }
       var nbFlux = Object.values(AppState.planLocal).reduce(function(s, arr) { return s + arr.length; }, 0);
       afficherToast('✅ Session importée — ' + nbFlux + ' flux · ' + AppState.modules.length + ' modules', 'succes');
+      demarrerAutoSave();
       if (AppState.donnees) {
         rendrePlanningFlux(AppState.donnees);
         rendreGantt(AppState.donnees);
@@ -8880,6 +9019,7 @@ function afficherToast(message, type) {
 document.addEventListener('DOMContentLoaded', function() {
   restaurerDistancier();
   restaurerCartographie();
+  verifierAutoSave();
 
   // Sync jour dans modal
   var selJour  = document.getElementById('sel-jour');
