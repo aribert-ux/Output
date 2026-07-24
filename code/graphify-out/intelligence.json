@@ -1,0 +1,36 @@
+{
+  "hotspots": [
+    {
+      "label": "calculerPlanningTournee()",
+      "risk": 0.629,
+      "type": "FUNCTION"
+    },
+    {
+      "label": "validerTournee()",
+      "risk": 0.431,
+      "type": "FUNCTION"
+    },
+    {
+      "label": "calculerPlanningAvecPauses()",
+      "risk": 0.383,
+      "type": "FUNCTION"
+    },
+    {
+      "label": "validerContraintesLivraison()",
+      "risk": 0.316,
+      "type": "FUNCTION"
+    },
+    {
+      "label": "verifierR9Journee()",
+      "risk": 0.286,
+      "type": "FUNCTION"
+    }
+  ],
+  "blast_radius": {
+    "validerTournee()": 12,
+    "lireOngletBrut()": 11,
+    "ouvrirClasseur()": 9,
+    "verifierR9Journee()": 9,
+    "heureVersMinutes()": 7
+  }
+}

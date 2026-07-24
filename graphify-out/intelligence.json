@@ -1,0 +1,36 @@
+{
+  "hotspots": [
+    {
+      "label": "Search",
+      "risk": 0.605,
+      "type": "FUNCTION"
+    },
+    {
+      "label": "calculerPlanningTournee()",
+      "risk": 0.289,
+      "type": "FUNCTION"
+    },
+    {
+      "label": "r_Step_1b()",
+      "risk": 0.245,
+      "type": "FUNCTION"
+    },
+    {
+      "label": "validerTournee()",
+      "risk": 0.205,
+      "type": "FUNCTION"
+    },
+    {
+      "label": "code.js",
+      "risk": 0.204,
+      "type": "FUNCTION"
+    }
+  ],
+  "blast_radius": {
+    "validerTournee()": 12,
+    "lireOngletBrut()": 11,
+    "ouvrirClasseur()": 9,
+    "verifierR9Journee()": 9,
+    "heureVersMinutes()": 7
+  }
+}

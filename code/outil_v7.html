@@ -110,6 +110,17 @@
       position: absolute; font-size: 9px; color: #607D8B; font-weight: 600; top: 3px;
       transform: translateX(-50%); white-space: nowrap; pointer-events: none;
     }
+    #pfp-navpairs {
+      border-bottom: 2px solid #B2EBF2; background: #E0F7FA;
+      padding: 4px 8px 6px; display: none; flex-direction: column; gap: 3px;
+    }
+    .pfp-navpair-row { display: flex; align-items: center; gap: 6px; }
+    .pfp-navpair-item {
+      font-size: 10px; font-weight: 600; color: #fff; padding: 2px 7px; border-radius: 3px;
+      cursor: grab; white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis;
+    }
+    .pfp-navpair-item.placed { opacity: 0.55; cursor: default; }
+    .pfp-navpair-status { font-size: 9px; color: #00838F; margin-left: 4px; }
     #pfp-unplaced-zone {
       border-top: 1px dashed #CFD8DC; padding: 4px 8px;
       display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 30px;
@@ -978,6 +989,7 @@
       </div>
       <div id="pfp-timeline-wrapper">
         <div id="pfp-time-axis"></div>
+        <div id="pfp-navpairs"></div>
         <div id="pfp-rows-container">
           <div style="text-align:center;padding:20px;color:#90A4AE;font-size:12px">⏳ Chargement...</div>
         </div>
@@ -2579,13 +2591,7 @@ function getTourneeParam(tid, paramIdx, data) {
 // ── Panel tournées — afficher les paramètres du module sélectionné ──
 var _moduleSelectionne = null;
 // ── Auto-fill optimisé — globals ──
-var _afOpt_autoCreatedTids = [];
-var _afOpt_autoCreatedModIds = [];
-var _afOpt_cancelled = false;
-var _afOpt_startTime = 0;
-var _afOpt_navetteCount = 0;
-var _afOpt_entrepotModules = {}; // {entrepot: [{modId, endMin}]} — suivi pour réutilisation des modules
-var _afOpt_storeSlots = {}; // { magasin: [{start, end, tid}] } — partagé Phase 1 + Phase 2
+
 function selectionnerModule(modId) {
   _moduleSelectionne = modId;
   // Mettre en évidence dans le gantt
@@ -3369,6 +3375,12 @@ function rendrePlanningFlux(data) {
         }
       });
     });
+    // Soustraire les UT déjà couvertes par navettisation (navette créée = engagement de livraison via relais)
+    var utNavettise = (AppState.fluxNavettes || []).filter(function(fn) {
+      return fn.magasin === f.magasin && fn.marchandise === f.marchandise && fn.entrepotOrigine === f.entrepot;
+    }).reduce(function(s, fn) { return s + fn.utNavette; }, 0);
+    utAff += utNavettise;
+
     var estComplet = f.ut > 0 && utAff >= f.ut - 0.01;
     if (estComplet) return;
 
@@ -3385,29 +3397,13 @@ function rendrePlanningFlux(data) {
     placed.push({ flux: f, utAff: utAff, blockStart: blockStart, blockEnd: blockEnd, dur: dur });
   });
 
-  // Navettes libres → toujours non positionnées
+  // Navettes à vide (sans _navFluxId) → zone unplacée classique
   (AppState.navettesLibres || []).forEach(function(nav) {
-    var utAss = 0;
-    Object.keys(AppState.planLocal).forEach(function(tid) {
-      (AppState.planLocal[tid] || []).forEach(function(pf) {
-        if (pf._navetteId === nav._navetteId)
-          utAss += parseFloat(pf.utAffecte !== undefined ? pf.utAffecte : pf.ut) || 0;
-      });
-    });
-    var estComplete = nav.ut > 0 ? utAss >= nav.ut - 0.01 : Object.keys(AppState.planLocal).some(function(tid) {
+    if (nav._navFluxId) return; // navette avec marchandises → section navpairs
+    var estComplete = Object.keys(AppState.planLocal).some(function(tid) {
       return (AppState.planLocal[tid] || []).some(function(f) { return f._navetteId === nav._navetteId; });
     });
-    if (!estComplete) unplaced.push({ flux: nav, utAff: utAss, isNavette: true });
-  });
-
-  // Flux dérivés non encore placés dans le Gantt
-  (AppState.fluxDerivesNavette || []).forEach(function(fd) {
-    var alreadyInPlan = Object.keys(AppState.planLocal).some(function(tid) {
-      return (AppState.planLocal[tid] || []).some(function(pf) {
-        return pf._navFluxId === fd._navFluxId && pf._isFluxNavettise;
-      });
-    });
-    if (!alreadyInPlan) unplaced.push({ flux: fd, utAff: 0, isFluxDerive: true });
+    if (!estComplete) unplaced.push({ flux: nav, utAff: 0, isNavette: true });
   });
 
   // 4 — Tri + empaquetage groupé par zone entrepôt, blocs les plus courts en premier
@@ -3559,6 +3555,29 @@ function rendrePlanningFlux(data) {
       '(trajet ' + (b.dur - 30) + ' min + 30 min)' +
       (b.utAff > 0 ? '\nDéjà attribué : ' + Math.round(b.utAff * 10) / 10 + ' / ' + f.ut + ' UT' : '');
 
+    var _utNavJFP = (AppState.fluxNavettes || []).filter(function(fn) {
+      return fn.magasin === f.magasin && fn.marchandise === f.marchandise && fn.entrepotOrigine === f.entrepot;
+    }).reduce(function(s, fn) { return s + fn.utNavette; }, 0);
+    var _utDispoJFP = Math.max(0, Math.round((f.ut - _utNavJFP) * 10) / 10);
+    if (_utDispoJFP > 0 && wClamped > 48) {
+      (function(fNav) {
+        var navBtnJFP = document.createElement('button');
+        navBtnJFP.textContent = '⇄';
+        navBtnJFP.title = 'Navetter ce flux (' + fNav._utDispo + ' UT dispo)';
+        navBtnJFP.style.cssText = 'position:absolute;top:2px;right:2px;background:rgba(0,0,0,0.28);border:none;border-radius:2px;color:#fff;font-size:9px;font-weight:700;cursor:pointer;padding:0 3px;line-height:1.5;z-index:10;pointer-events:auto';
+        navBtnJFP.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+        navBtnJFP.addEventListener('dragstart', function(e) { e.preventDefault(); e.stopPropagation(); });
+        navBtnJFP.addEventListener('click', function(e) {
+          e.stopPropagation();
+          ouvrirModalNavetteFlux(fNav);
+        });
+        el.appendChild(navBtnJFP);
+      })({ magasin: f.magasin, marchandise: f.marchandise, ut: f.ut, entrepot: f.entrepot,
+           jour: f.jour || AppState.jourActif || '', zoneEntrepot: f.zoneEntrepot || '',
+           zoneLivraison: f.zoneLivraison || '', centreComm: f.centreComm || '',
+           _utDispo: _utDispoJFP });
+    }
+
     var fluxData = { magasin: f.magasin, marchandise: f.marchandise, ut: f.ut,
       entrepot: f.entrepot, zoneLivraison: f.zoneLivraison,
       centreComm: f.centreComm, zoneEntrepot: f.zoneEntrepot };
@@ -3573,9 +3592,112 @@ function rendrePlanningFlux(data) {
     rowsEl.appendChild(el);
   });
 
-  if (placed.length === 0 && unplaced.length === 0) {
+  if (placed.length === 0 && unplaced.length === 0 && (AppState.fluxNavettes || []).length === 0) {
     rowsEl.innerHTML = '<div style="padding:16px;text-align:center;color:#90A4AE;font-size:12px">Aucun flux à planifier</div>';
     rowsEl.style.width = '100%';
+  }
+
+  // ── Section navettisations actives (navette avec marchandises + flux dérivé) ──
+  var navPairsEl = document.getElementById('pfp-navpairs');
+  if (navPairsEl) {
+    navPairsEl.innerHTML = '';
+    var allNavPairs = AppState.fluxNavettes || [];
+    if (allNavPairs.length > 0) {
+      navPairsEl.style.display = 'flex';
+      var pairTitle = document.createElement('div');
+      pairTitle.style.cssText = 'font-size:10px;font-weight:700;color:#00838F;padding:2px 0 4px';
+      pairTitle.textContent = '⇄ Navettisations actives';
+      navPairsEl.appendChild(pairTitle);
+
+      allNavPairs.forEach(function(pair) {
+        var navItem = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === pair._navetteId; })[0];
+        var derItem = (AppState.fluxDerivesNavette || []).filter(function(d) { return d._navFluxId === pair._navFluxId; })[0];
+
+        // Statut de placement
+        var navPlacee = Object.keys(AppState.planLocal).some(function(tid) {
+          return (AppState.planLocal[tid] || []).some(function(pf) { return pf._navetteId === pair._navetteId; });
+        });
+        var derivePlacee = Object.keys(AppState.planLocal).some(function(tid) {
+          return (AppState.planLocal[tid] || []).some(function(pf) { return pf._navFluxId === pair._navFluxId && pf._isFluxNavettise; });
+        });
+
+        var row = document.createElement('div');
+        row.className = 'pfp-navpair-row';
+
+        // Bloc navette (entrepôtOrigine → entrepôtRelay)
+        (function(navPayload, placed) {
+          var el = document.createElement('div');
+          el.className = 'pfp-navpair-item' + (placed ? ' placed' : '');
+          el.style.background = '#00ACC1';
+          el.textContent = (placed ? '✓ ' : '') + pair.entrepotOrigine + ' → ' + pair.entrepotRelay + ' · ' + pair.utNavette + ' UT';
+          el.title = (placed ? 'Navette planifiée' : 'Glisser vers une tournée') + '\n' + pair.entrepotOrigine + ' → ' + pair.entrepotRelay + '\n' + pair.utNavette + ' UT ' + pair.marchandise;
+          if (!placed) {
+            el.draggable = true;
+            el.addEventListener('dragstart', function(e) {
+              e.dataTransfer.setData('text/plain', JSON.stringify(navPayload));
+              el.classList.add('dragging');
+            });
+            el.addEventListener('dragend', function() { el.classList.remove('dragging'); });
+          }
+          row.appendChild(el);
+        })({ magasin: pair.entrepotRelay, marchandise: pair.marchandise, ut: pair.utNavette,
+             entrepot: pair.entrepotOrigine, zoneLivraison: '', centreComm: '',
+             zoneEntrepot: navItem ? (navItem.zoneEntrepot || '') : '',
+             isNavette: true, _navetteId: pair._navetteId, _navFluxId: pair._navFluxId }, navPlacee);
+
+        var sep = document.createElement('span');
+        sep.style.cssText = 'color:#00838F;font-weight:700;font-size:12px';
+        sep.textContent = '→';
+        row.appendChild(sep);
+
+        // Bloc flux dérivé (entrepôtRelay → magasin)
+        (function(derPayload, placed) {
+          var el = document.createElement('div');
+          el.className = 'pfp-navpair-item' + (placed ? ' placed' : '');
+          el.style.background = '#0097A7';
+          el.textContent = (placed ? '✓ ' : '') + pair.entrepotRelay + ' → ' + pair.magasin + ' · ' + pair.utNavette + ' UT';
+          el.title = (placed ? 'Flux dérivé planifié' : 'Glisser vers une tournée départ ' + pair.entrepotRelay) + '\n' + pair.entrepotRelay + ' → ' + pair.magasin + '\n' + pair.utNavette + ' UT ' + pair.marchandise;
+          if (!placed) {
+            el.draggable = true;
+            el.addEventListener('dragstart', function(e) {
+              e.dataTransfer.setData('text/plain', JSON.stringify(derPayload));
+              el.classList.add('dragging');
+            });
+            el.addEventListener('dragend', function() { el.classList.remove('dragging'); });
+          }
+          row.appendChild(el);
+        })({ magasin: pair.magasin, marchandise: pair.marchandise, ut: pair.utNavette,
+             entrepot: pair.entrepotRelay,
+             zoneLivraison: derItem ? (derItem.zoneLivraison || '') : '',
+             centreComm: derItem ? (derItem.centreComm || '') : '',
+             zoneEntrepot: derItem ? (derItem.zoneEntrepot || '') : '',
+             _navFluxId: pair._navFluxId, _isFluxNavettise: true }, derivePlacee);
+
+        // Statut global + bouton supprimer
+        var status = document.createElement('span');
+        status.className = 'pfp-navpair-status';
+        status.textContent = navPlacee && derivePlacee ? '✓ Planifiée' : navPlacee ? '⋯ Flux dérivé restant' : '⋯ À planifier';
+
+        (function(navFluxId) {
+          var delB = document.createElement('button');
+          delB.style.cssText = 'background:rgba(0,131,143,0.18);border:none;border-radius:2px;color:#006064;font-size:9px;cursor:pointer;padding:0 4px;line-height:1.6;margin-left:4px';
+          delB.textContent = '✕';
+          delB.title = 'Supprimer cette navettisation';
+          delB.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (window.confirm('Supprimer cette navettisation ?\nLa navette, le flux dérivé et leurs assignations seront supprimés.')) {
+              _supprimerNavettisation(navFluxId);
+            }
+          });
+          row.appendChild(status);
+          row.appendChild(delB);
+        })(pair._navFluxId);
+
+        navPairsEl.appendChild(row);
+      });
+    } else {
+      navPairsEl.style.display = 'none';
+    }
   }
 
   // Zone non-positionnés
@@ -4999,9 +5121,9 @@ function rendreGantt(data) {
             segEl.style.outline = '1px dashed #00BCD4';
             segEl.style.outlineOffset = '-1px';
 
-            // Icône ⇄ en badge  var _navMark = document.createElement('span');  _navMark.textContent = '⇄';
-            _navMark.style.cssText = [    'font-size:8px', 'font-weight:700', 'color:#00BCD4',
-              'position:absolute', 'top:1px', 'left:2px', 'line-height:1',    'pointer-events:none', 'z-index:10'  ].join(';');
+            var _navMark = document.createElement('span');
+            _navMark.textContent = '⇄';
+            _navMark.style.cssText = 'font-size:8px;font-weight:700;color:#00BCD4;position:absolute;top:1px;left:2px;line-height:1;pointer-events:none;z-index:10';
             segEl.style.position = 'relative';
             segEl.appendChild(_navMark);
 
@@ -5533,6 +5655,39 @@ function onFluxDepose(flux, tourneeId, capacite) {
     afficherToast('🚫 Navette impossible — cette tournée a déjà des flux assignés', 'erreur'); return;
   }
 
+  // Garde anti-téléportation flux dérivé : la navette doit être planifiée EN PREMIER
+  if (flux._isFluxNavettise && flux._navFluxId) {
+    var _fnPair = (AppState.fluxNavettes || []).filter(function(fn) { return fn._navFluxId === flux._navFluxId; })[0];
+    if (_fnPair) {
+      // 1. La navette doit être dans planLocal
+      var _navTid = null;
+      Object.keys(AppState.planLocal).forEach(function(tid) {
+        if ((AppState.planLocal[tid] || []).some(function(pf) { return pf._navetteId === _fnPair._navetteId; })) {
+          _navTid = tid;
+        }
+      });
+      if (!_navTid) {
+        afficherToast('🚫 Placez d\'abord la navette (' + _fnPair.entrepotOrigine + ' → ' + _fnPair.entrepotRelay + ') avant le flux dérivé', 'erreur');
+        return;
+      }
+      // 2. L'offset de la tournée cible doit être ≥ celui de la navette
+      function _getOffsetForTid(tid) {
+        var keys = Object.keys(AppState.modulesOffsets || {});
+        for (var ki = 0; ki < keys.length; ki++) {
+          var k = keys[ki];
+          if (k.slice(k.indexOf('_') + 1) === tid) return AppState.modulesOffsets[k];
+        }
+        return 6 * 60; // défaut 6h
+      }
+      var _offNav    = _getOffsetForTid(_navTid);
+      var _offDerive = _getOffsetForTid(tourneeId);
+      if (_offDerive < _offNav - 1) {
+        afficherToast('🚫 Le flux dérivé ne peut pas partir avant la navette (' + minutesVersHeure(_offNav) + ' → ' + minutesVersHeure(_offDerive) + ')', 'erreur');
+        return;
+      }
+    }
+  }
+
   // Navette à 0 UT : dépôt direct sans vérif capacité ni modal de fraction
   if (flux.isNavette && !(parseFloat(flux.ut) > 0)) {
     var testR2z = validerCompatibiliteMarchandises((AppState.planLocal[tourneeId] || []).concat([flux]));
@@ -5619,7 +5774,7 @@ function supprimerFluxTournee(tourneeId, index) {
     if (!AppState.fluxDerivesNavette) AppState.fluxDerivesNavette = [];
     var alreadyInDerives = AppState.fluxDerivesNavette.some(function(fd) { return fd._navFluxId === flux._navFluxId; });
     if (!alreadyInDerives) AppState.fluxDerivesNavette.push(flux);
-    afficherToast('🔄 ' + mag + ' remis en zone non-positionnés', 'info');
+    afficherToast('🔄 Flux dérivé ' + mag + ' remis en attente dans navettisations actives', 'info');
     if (AppState.donnees) {
       rendrePlanningFlux(AppState.donnees);
       rendreGantt(AppState.donnees);
@@ -5629,19 +5784,35 @@ function supprimerFluxTournee(tourneeId, index) {
     return;
   }
 
-  // Cas — navette avec marchandises : cascade avec confirmation
+  // Cas — navette avec marchandises : retour dans navpairs (sans supprimer la navettisation)
   if (flux.isNavette && flux._navFluxId) {
     var fnId = flux._navFluxId;
-    var deriveTid = null;
+    // Retirer la navette de la tournée
+    AppState.planLocal[tourneeId].splice(index, 1);
+    // Retirer aussi le flux dérivé s'il est planifié et le remettre dans fluxDerivesNavette
+    var derReplaced = false;
     Object.keys(AppState.planLocal).forEach(function(tid) {
-      (AppState.planLocal[tid] || []).forEach(function(pf) {
-        if (pf._navFluxId === fnId && pf._isFluxNavettise) deriveTid = tid;
-      });
+      var plan = AppState.planLocal[tid] || [];
+      for (var i = plan.length - 1; i >= 0; i--) {
+        if (plan[i]._navFluxId === fnId && plan[i]._isFluxNavettise) {
+          var derFlux = plan.splice(i, 1)[0];
+          if (!AppState.fluxDerivesNavette) AppState.fluxDerivesNavette = [];
+          if (!AppState.fluxDerivesNavette.some(function(d) { return d._navFluxId === fnId; })) {
+            AppState.fluxDerivesNavette.push(derFlux);
+          }
+          derReplaced = true;
+        }
+      }
     });
-    var msg = 'Supprimer la navettisation ' + (flux.entrepot || '') + ' → ' + (flux.magasin || '') + ' ?';
-    if (deriveTid) msg += '\nLe flux dérivé dans ' + deriveTid + ' sera également retiré.';
-    if (!window.confirm(msg)) return;
-    _supprimerNavettisation(fnId);
+    var toastMsg = '🔄 Navette ' + (flux.entrepot || '') + ' → ' + (flux.magasin || '') + ' retirée';
+    if (derReplaced) toastMsg += ' — flux dérivé remis en attente';
+    afficherToast(toastMsg, 'info');
+    if (AppState.donnees) {
+      rendrePlanningFlux(AppState.donnees);
+      rendreGantt(AppState.donnees);
+      if (AppState.vueActive === 'remorques') rendreGanttRemorques(AppState.donnees);
+      if (AppState.vueActive === 'magasins')  rendreGanttMagasins(AppState.donnees);
+    }
     return;
   }
 
@@ -5828,1594 +5999,1195 @@ function autoFillGlouton() {
 //  AUTO-FILL OPTIMISÉ — Heuristique + LNS
 // ══════════════════════════════════════════════════════
 
-// ── Utilitaires ──────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+// VARIABLES GLOBALES
+// ══════════════════════════════════════════════════════════════════
 
-function _afOpt_buildDistMap() {
-  var dm = {};
-  lireDistancierWb().forEach(function(d) { dm[d.f + '_' + d.t] = { km: d.km, m: d.m }; });
-  return dm;
+var _afOpt_cancelled        = false;
+var _afOpt_startTime        = 0;
+var _afOpt_navetteCount     = 0;
+var _afOpt_autoCreatedTids  = [];
+var _afOpt_autoCreatedModIds = [];
+var _afOpt_storeSlots       = {};
+var _afOpt_modulesInternes  = [];
+
+var _FAMILLE_FRAIS = ['FL', 'PF'];
+var _FAMILLE_SURG  = ['SURG'];
+
+// ══════════════════════════════════════════════════════════════════
+// UTILITAIRES
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_getFamille(marc) {
+  var m = (marc || '').toUpperCase();
+  if (_FAMILLE_FRAIS.indexOf(m) >= 0) return 'FRAIS';
+  if (_FAMILLE_SURG.indexOf(m)  >= 0) return 'SURG';
+  return 'SEC';
+}
+
+function _afOpt_genTid() {
+  return 'T_auto_' + Date.now() + '_' + Math.floor(Math.random() * 10000);
 }
 
 function _afOpt_getDist(dm, a, b) {
-  var e = dm[a + '_' + b]
-       || dm[(a||'').toLowerCase() + '_' + (b||'').toLowerCase()]
-       || dm[b + '_' + a]
-       || dm[(b||'').toLowerCase() + '_' + (a||'').toLowerCase()];
-  if (!e || e.m == null || e.m === 0) return null;
-  return { km: +e.km, m: +e.m };
-}
-
-function _afOpt_getCartoCreneau(magasin, jour, marchandise) {
-  var cm = AppState.cartographiePlages[magasin];
-  if (!cm) return null;
-  var cj = cm[jour];
-  if (!cj) return null;
-  var marc = (marchandise || '').toUpperCase();
-  var key = (marc === 'FL' || marc === 'PF') ? 'frais' : (marc === 'SURG') ? 'surg' : 'sec';
-  var crens = cj[key];
-  if (!crens) return null;
-  return crens; // [{debut, fin}, ...]
-}
-
-function _afOpt_utTotal(fluxList) {
-  return fluxList.reduce(function(s, f) {
-    return s + (parseFloat(f.utAffecte !== undefined ? f.utAffecte : f.ut) || 0);
-  }, 0);
-}
-
-function _afOpt_difficulte(flux, dm, jour) {
-  var score = 0;
-  var crens = _afOpt_getCartoCreneau(flux.magasin, jour, flux.marchandise);
-  if (!crens || crens.length === 0) { score += 10000; }
-  else {
-    var dur = 0;
-    crens.forEach(function(c) {
-      // Créneau nocturne enjambant minuit : fin < debut → durée réelle = fin + 1440 - debut
-      var d = c.fin > c.debut ? (c.fin - c.debut) : (c.fin + 1440 - c.debut);
-      dur += d;
-    });
-    score += dur > 0 ? (2000 / dur) : 5000;
-    // Bonus de priorité pour les créneaux nocturnes (traités en premier car plus contraints)
-    var hasNuit = crens.some(function(c) { return c.debut >= 22 * 60 || c.fin < 6 * 60; });
-    if (hasNuit) score += 3000; // priorité haute = traité avant les flux de jour
-  }
-  var d = _afOpt_getDist(dm, flux.entrepot, flux.magasin);
-  score += d ? d.km : 5000;
-  return score;
-}
-
-function _afOpt_formatETA(ms) {
-  if (ms <= 0) return '< 1s';
-  var s = Math.ceil(ms / 1000);
-  if (s < 60) return s + 's';
-  return Math.floor(s / 60) + 'min ' + (s % 60) + 's';
+  if (!dm || !a || !b) return null;
+  var key1 = a + '|' + b;
+  var key2 = b + '|' + a;
+  return dm[key1] || dm[key2] || null;
 }
 
 function _afOpt_updateProgress(pct, label) {
-  var ov = document.getElementById('af-overlay');
-  if (!ov) return;
-  ov.style.display = 'flex';
-  var elapsed = Date.now() - _afOpt_startTime;
-  var eta = pct > 0.02 ? Math.round(elapsed * (1 / pct - 1)) : null;
-  var barEl = document.getElementById('af-bar');
-  var phEl  = document.getElementById('af-phase');
-  var pcEl  = document.getElementById('af-pct');
-  var etEl  = document.getElementById('af-eta');
-  var pctN  = Math.min(100, Math.round(pct * 100));
-  if (barEl) barEl.style.width = pctN + '%';
-  if (phEl)  phEl.textContent  = label;
-  if (pcEl)  pcEl.textContent  = pctN + '%';
-  if (etEl)  etEl.textContent  = 'Temps restant estimé : ' + (eta ? _afOpt_formatETA(eta) : 'calcul…');
+  var pctClamped = Math.min(1, Math.max(0, pct));
+  var el = document.getElementById('af-bar');      // ✅ correct
+  var lb = document.getElementById('af-phase');    // ✅ correct
+  var pc = document.getElementById('af-pct');      // ✅ correct
+  if (el) el.style.width = Math.round(pctClamped * 100) + '%';
+  if (lb) lb.textContent = label || '';
+  if (pc) pc.textContent = Math.round(pctClamped * 100) + '%';
 }
 
 function _afOpt_hideOverlay() {
-  var ov = document.getElementById('af-overlay');
+  var ov = document.getElementById('af-overlay');  // ✅ correct
   if (ov) ov.style.display = 'none';
 }
 
-function _afOpt_cancel() {
-  _afOpt_cancelled = true;
-  _afOpt_hideOverlay();
+
+function _afOpt_buildDistMap() {
+  var dm = {};
+  var list = AppState.distancierParsed || [];       // ✅ correct
+  list.forEach(function(d) {
+    if (!d || !d.f || !d.t) return;
+    dm[d.f + '|' + d.t] = { m: d.m || 0 };
+    dm[d.t + '|' + d.f] = { m: d.m || 0 };        // symétrique
+  });
+  return dm;
 }
 
-// ── Collecte des données ──────────────────────────────
-
-function _afOpt_collectFlux(data, jour) {
-  var selMarc    = AppState.filtresFlux.marchandise || {};
-  var selMag     = AppState.filtresFlux.magasin     || {};
-  var selEntr    = AppState.filtresFlux.entrepot    || {};
-  var selZoneLog = AppState.filtresFlux.zoneLog     || {};
-  var selZoneLiv = AppState.filtresFlux.zoneLiv     || {};
-  var brut = (data.flux || []).slice(1);
-  var all = brut.map(function(row) {
-    return {
-      zoneEntrepot:  row[0] ? row[0].toString() : '',
-      entrepot:      row[1] ? row[1].toString() : '',
-      zoneLivraison: row[2] ? row[2].toString() : '',
-      centreComm:    row[3] ? row[3].toString() : '',
-      magasin:       row[4] ? row[4].toString() : '',
-      marchandise:   row[5] ? row[5].toString().toUpperCase() : '',
-      ut:            parseFloat(row[6]) || 0,
-      jour:          row[7] ? row[7].toString() : '',
-      embDelai:      parseFloat(row[8]) || 0,
-      repriseEmb:    row[9] ? row[9].toString() : 'Non'
-    };
-  }).concat(AppState.fluxLocaux || []);
-  return all.filter(function(f) {
-    var okJ = !jour || f.jour === jour;
-    var okM = !Object.keys(selMarc).length    || selMarc[f.marchandise];
-    var okG = !Object.keys(selMag).length     || selMag[f.magasin];
-    var okE = !Object.keys(selEntr).length    || selEntr[f.entrepot];
-    var okL = !Object.keys(selZoneLog).length || selZoneLog[f.zoneEntrepot];
-    var okV = !Object.keys(selZoneLiv).length || selZoneLiv[f.zoneLivraison];
-    return okJ && okM && okG && okE && okL && okV && f.magasin && f.magasin !== '—' && f.ut >= 0.5;
-  });
+function _afOpt_getCartoCreneau(magasin, jour, marchandise) {
+  var cartoBase = AppState.cartographiePlages || {};
+  var magData   = cartoBase[magasin];
+  if (!magData) return [];
+  var jourData  = magData[jour];
+  if (!jourData) return [];
+  // Déterminer la catégorie
+  var m = (marchandise || '').toUpperCase();
+  var cat;
+  if (m === 'SURG')                    cat = 'surg';
+  else if (m === 'FL' || m === 'PF')   cat = 'frais';
+  else                                 cat = 'sec';
+  return jourData[cat] || [];
 }
 
-function _afOpt_collectTourStates(jour) {
-  var states = {};
-  var dm = _afOpt_buildDistMap();
-  var lines = (AppState.tourneesLocales || []).filter(function(t) {
-    return !jour || (t[7] || '').toString() === jour;
+function _afOpt_collectFlux(donnees, jour) {
+  var result = [];
+  // donnees = AppState.donnees = { flux: [[...], ...], lieux: [...] }
+  var rows = (donnees && donnees.flux) ? donnees.flux.slice(1) : [];
+  rows.forEach(function(row) {
+    if (!row) return;
+    // Colonnes : [0]ZoneEntr [1]Entrepot [2]ZoneLiv [3]CentreComm [4]Magasin [5]Marc [6]UT [7]Jour
+    var jourRow = row[7] ? row[7].toString() : '';
+    if (jourRow !== jour) return;
+    var mag  = row[4] ? row[4].toString().trim() : '';
+    var marc = row[5] ? row[5].toString().toUpperCase().trim() : '';
+    var ut   = parseFloat(row[6]) || 0;
+    var entr = row[1] ? row[1].toString().trim() : 'ENTREPOT';
+    var zone = row[0] ? row[0].toString().trim() : '';
+    if (!mag || !ut) return;
+    result.push({
+      magasin:      mag,
+      marchandise:  marc,
+      ut:           ut,
+      entrepot:     entr,
+      zoneEntrepot: zone,
+      embDelai:     0
+    });
   });
-  lines.forEach(function(t) {
-    var tid = String(t[0] || '');
-    if (!tid) return;
-    var ov = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
-    var cap      = ov.capacite !== undefined ? +ov.capacite : (parseFloat(t[1]) || 33);
-    var entrepot = t[2] ? t[2].toString() : 'ENTREPOT';
-    var retour   = ov.retour   !== undefined ? ov.retour   : entrepot;
-    var admDur   = ov.admDur   !== undefined ? +ov.admDur  : (parseFloat(t[3]) || 15);
-    var chgtDur  = ov.chgtDur  !== undefined ? +ov.chgtDur : (parseFloat(t[4]) || 30);
+  return result;
+}
 
-    // Chercher l'offset dans les modules existants
-    var offsetMin = null;
-    var allMods = [AppState.moduleM0].concat(AppState.modules);
-    for (var mi = 0; mi < allMods.length; mi++) {
-      var m = allMods[mi];
-      if (m.tours.indexOf(tid) >= 0) {
-        var stored = AppState.modulesOffsets[m.id + '_' + tid];
-        if (stored !== undefined && stored !== null) offsetMin = stored;
-        break;
-      }
+function _afOpt_cleanupPreviousRun() {
+  if (!_afOpt_autoCreatedTids)   _afOpt_autoCreatedTids   = [];
+  if (!_afOpt_autoCreatedModIds) _afOpt_autoCreatedModIds = [];
+  if (!AppState.modules)         AppState.modules          = [];
+  if (!AppState.modulesOffsets)  AppState.modulesOffsets   = {};
+  if (!AppState.planLocal)       AppState.planLocal         = {};
+  if (!AppState.tourneeOverrides) AppState.tourneeOverrides = {};
+
+  // Supprimer les tournées auto précédentes
+  _afOpt_autoCreatedTids.forEach(function(tid) {
+    if (AppState.planLocal) delete AppState.planLocal[tid];
+    if (AppState.tourneesLocales) {
+      AppState.tourneesLocales = AppState.tourneesLocales.filter(function(t) {
+        return String(t[0]) !== tid;
+      });
     }
+  });
 
-    // Si pas d'offset connu, calculer depuis les flux planifiés existants
-    if (offsetMin === null) {
-      var fluxExist = AppState.planLocal[tid] || [];
-      if (fluxExist.length > 0) {
-        var bestOff = Infinity;
-        fluxExist.forEach(function(f) {
-          var off = _afOpt_computeBestDeparture(entrepot, f.magasin, f.marchandise, dm, jour);
-          if (off < bestOff) bestOff = off;
+  // Supprimer les modules auto précédents
+  _afOpt_autoCreatedModIds.forEach(function(mid) {
+    AppState.modules = AppState.modules.filter(function(m) { return m.id !== mid; });
+    Object.keys(AppState.modulesOffsets).forEach(function(k) {
+      if (k.startsWith(mid + '_')) delete AppState.modulesOffsets[k];
+    });
+  });
+
+  _afOpt_autoCreatedTids   = [];
+  _afOpt_autoCreatedModIds = [];
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PHASE 0 — Extraction contextuelle (jours adjacents)
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_phase0_extractContextualTournees(jour, dm) {
+  var jourPrev = (typeof getJourPrecedent === 'function') ? getJourPrecedent(jour) : null;
+  var jourNext = (typeof getJourSuivant  === 'function') ? getJourSuivant(jour)  : null;
+  var result   = [];
+
+  function extractForJour(jourCible, shift) {
+    if (!jourCible) return;
+    Object.keys(AppState.planLocal || {}).forEach(function(tid) {
+      var tData = null;
+      if (AppState.tourneesLocales) {
+        AppState.tourneesLocales.forEach(function(t) {
+          if (String(t[0]) === tid) tData = t;
         });
-        offsetMin = bestOff === Infinity ? 6 * 60 : bestOff;
-      } else {
-        offsetMin = 6 * 60;
       }
-    }
+      if (!tData || String(tData[7] || '') !== jourCible) return;
+      var flux = AppState.planLocal[tid] || [];
+      if (!flux.length) return;
 
-    states[tid] = {
-      tid: tid, capacite: cap, entrepot: entrepot, retour: retour,
-      admDur: admDur, chgtDur: chgtDur, offsetMin: offsetMin,
-      flux: AppState.planLocal[tid] ? AppState.planLocal[tid].slice() : [],
-      cout: 0, autoCreated: false
-    };
-  });
-  return states;
+      var ov      = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
+      var offset  = 6 * 60;
+      if (AppState.modulesOffsets) {
+        Object.keys(AppState.modulesOffsets).forEach(function(key) {
+          if (key.endsWith('_' + tid)) offset = AppState.modulesOffsets[key];
+        });
+      }
+      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (parseFloat(tData[4]) || 30);
+      var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (parseFloat(tData[3]) || 15);
+      var dep     = (flux[0] && flux[0].entrepot) || 'ENTREPOT';
+
+      var hasFrais = flux.some(function(f) {
+        return _FAMILLE_FRAIS.indexOf((f.marchandise || '').toUpperCase()) >= 0;
+      });
+      var tractorStart = hasFrais
+        ? (offset + chgtDur + admDur)
+        : (offset + admDur);
+
+      // Construire un distMap avec séparateur '_' pour calculerPlanningGantt
+      var dmGantt = {};
+      lireDistancierWb().forEach(function(d) {
+        dmGantt[d.f + '_' + d.t] = { km: d.km, m: d.m };
+      });
+      var blocs = (typeof calculerPlanningGantt === 'function')
+        ? calculerPlanningGantt(tractorStart, flux, dmGantt, [], dep, admDur, dep)
+        : [];
+
+      blocs.forEach(function(b) {
+        if (b.type !== 'livraison' || !b.arret) return;
+        var mag   = b.arret.magasin || b.arret.lieu || '';
+        var debut = b.debut + shift;
+        var fin   = debut + b.duree;
+        result.push({ debut: debut, fin: fin, magasin: mag, tourneeId: tid });
+      });
+    });
+  }
+
+  extractForJour(jourPrev, -1440);
+  extractForJour(jourNext, +1440);
+  return result;
 }
 
-// ── Validation légère (sans RSE) ──────────────────────
+function _afOpt_phase0_initStoreSlots(contextualSlots) {
+  _afOpt_storeSlots = {};
+  contextualSlots.forEach(function(slot) {
+    if (!_afOpt_storeSlots[slot.magasin]) _afOpt_storeSlots[slot.magasin] = [];
+    _afOpt_storeSlots[slot.magasin].push({
+      start: slot.debut, end: slot.fin, tid: slot.tourneeId
+    });
+  });
+}
 
-function _afOpt_simulerRoute(ts, fluxOrd, dm, jour) {
-  var RSE_CYCLE = 270; // R6 : pause après 4h30 conduite (45 min)
+// ══════════════════════════════════════════════════════════════════
+// PHASE 1.1 — FFD par famille / entrepôt
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_phase1_ffd(fluxList) {
+  var CAP    = 33;
+  var sorted = fluxList.slice().sort(function(a, b) { return b.ut - a.ut; });
+  var groupes = [];
+
+  sorted.forEach(function(flux) {
+    var famille = _afOpt_getFamille(flux.marchandise);
+    var placed  = false;
+
+    for (var gi = 0; gi < groupes.length; gi++) {
+      var g = groupes[gi];
+      if (g.famille  !== famille)       continue;
+      if (g.entrepot !== flux.entrepot) continue;
+      if (g.utTotal + flux.ut > CAP + 0.01) continue;
+      var testFlux = g.flux.concat([flux]);
+      if (typeof validerCompatibiliteMarchandises === 'function') {
+        if (!validerCompatibiliteMarchandises(testFlux).valide) continue;
+      }
+      g.flux.push({
+        magasin:      flux.magasin,
+        marchandise:  flux.marchandise,
+        ut:           flux.ut,
+        utAffecte:    flux.ut,
+        entrepot:     flux.entrepot,
+        zoneEntrepot: flux.zoneEntrepot || '',
+        embDelai:     flux.embDelai     || 0
+      });
+      g.utTotal += flux.ut;
+      placed = true;
+      break;
+    }
+
+    if (!placed) {
+      groupes.push({
+        famille:  famille,
+        entrepot: flux.entrepot,
+        zone:     flux.zoneEntrepot || flux.entrepot || '',
+        utTotal:  flux.ut,
+        flux: [{
+          magasin:      flux.magasin,
+          marchandise:  flux.marchandise,
+          ut:           flux.ut,
+          utAffecte:    flux.ut,
+          entrepot:     flux.entrepot,
+          zoneEntrepot: flux.zoneEntrepot || '',
+          embDelai:     flux.embDelai     || 0
+        }]
+      });
+    }
+  });
+
+  return groupes;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PHASE 1.2 — Fractionnement des UT résiduelles
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_phase1_fractionner(groupes, fluxOriginaux) {
+  var CAP = 33;
+  var affecteesMap = {};
+
+  groupes.forEach(function(g) {
+    g.flux.forEach(function(f) {
+      var key = f.magasin + '|' + f.marchandise + '|' + f.entrepot;
+      affecteesMap[key] = (affecteesMap[key] || 0) + f.utAffecte;
+    });
+  });
+
+  fluxOriginaux.forEach(function(fluxSrc) {
+    var key  = fluxSrc.magasin + '|' + fluxSrc.marchandise + '|' + fluxSrc.entrepot;
+    var aff  = affecteesMap[key] || 0;
+    var rest = Math.round((fluxSrc.ut - aff) * 10) / 10;
+    if (rest <= 0.01) return;
+
+    var famille = _afOpt_getFamille(fluxSrc.marchandise);
+
+    for (var gi = 0; gi < groupes.length && rest > 0.01; gi++) {
+      var g     = groupes[gi];
+      if (g.famille !== famille || g.entrepot !== fluxSrc.entrepot) continue;
+      var libre = Math.round((CAP - g.utTotal) * 10) / 10;
+      if (libre <= 0.01) continue;
+      var testFlux = g.flux.concat([fluxSrc]);
+      if (typeof validerCompatibiliteMarchandises === 'function') {
+        if (!validerCompatibiliteMarchandises(testFlux).valide) continue;
+      }
+      var affecter = Math.round(Math.min(rest, libre) * 10) / 10;
+      g.flux.push({
+        magasin:      fluxSrc.magasin,
+        marchandise:  fluxSrc.marchandise,
+        ut:           fluxSrc.ut,
+        utAffecte:    affecter,
+        entrepot:     fluxSrc.entrepot,
+        zoneEntrepot: fluxSrc.zoneEntrepot || '',
+        embDelai:     fluxSrc.embDelai     || 0
+      });
+      g.utTotal += affecter;
+      rest = Math.round((rest - affecter) * 10) / 10;
+    }
+
+    while (rest > 0.01) {
+      var affecter2 = Math.round(Math.min(rest, CAP) * 10) / 10;
+      groupes.push({
+        famille:  famille,
+        entrepot: fluxSrc.entrepot,
+        zone:     fluxSrc.zoneEntrepot || fluxSrc.entrepot || '',
+        utTotal:  affecter2,
+        flux: [{
+          magasin:      fluxSrc.magasin,
+          marchandise:  fluxSrc.marchandise,
+          ut:           fluxSrc.ut,
+          utAffecte:    affecter2,
+          entrepot:     fluxSrc.entrepot,
+          zoneEntrepot: fluxSrc.zoneEntrepot || '',
+          embDelai:     fluxSrc.embDelai     || 0
+        }]
+      });
+      rest = Math.round((rest - affecter2) * 10) / 10;
+    }
+  });
+
+  return groupes;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PHASE 1.3 — Simulation de route + intervalles valides
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_simulerGroupe(entrepot, arrets, dm, jour) {
+  var RSE_CYCLE = 270;
   var RSE_PAUSE = 45;
-  var RSE_SVC   = 360; // R7 : pause après 6h service (30 min) — fidèle au Gantt
+  var RSE_SVC   = 360;
   var RSE_PSVC  = 30;
 
-  var curseur = ts.offsetMin + ts.chgtDur + ts.admDur;
-  var lieu = ts.entrepot;
-  var km = 0, driveSinceBreak = 0;
-  var deliveryTimes = []; // [{magasin, start, end}] pour la détection des conflits inter-modules
-  // service = conduite + attente + décharge (chgt+adm déjà comptés au départ)
-  var svcSinceBreak = (ts.chgtDur || 0) + (ts.admDur || 0);
+  var lieu            = entrepot;
+  var driveSinceBreak = 0;
+  var svcSinceBreak   = 0;
+  var deliveryTimes   = [];
+  var dureeRoute      = 0;
 
-  for (var i = 0; i < fluxOrd.length; i++) {
-    var f = fluxOrd[i];
-    var d = _afOpt_getDist(dm, lieu, f.magasin);
-    if (!d) return { error: 'dist_manquante', flux: f };
-    var crens = _afOpt_getCartoCreneau(f.magasin, jour, f.marchandise);
-    if (!crens) return { error: 'carto_manquante', flux: f };
-    if (crens.length === 0) return { error: 'carto_vide', flux: f };
+  for (var i = 0; i < arrets.length; i++) {
+    var arret = arrets[i];
+    var d     = _afOpt_getDist(dm, lieu, arret.magasin);
+    if (!d) return { error: 'dist_manquante', flux: arret };
+
+    var crens = _afOpt_getCartoCreneau(arret.magasin, jour, arret.marchandise);
+    if (!crens || !crens.length) return { error: 'carto_vide', flux: arret };
 
     var segDrive = d.m;
     var rseExtra = 0;
-    // R6 : pause conduite — réinitialise aussi le compteur de service (fidèle au Gantt)
+
     if (driveSinceBreak + segDrive > RSE_CYCLE) {
-      rseExtra = RSE_PAUSE;
+      rseExtra        = RSE_PAUSE;
       driveSinceBreak = (driveSinceBreak + segDrive) - RSE_CYCLE;
-      svcSinceBreak   = driveSinceBreak; // service depuis la pause R6 = uniquement le drive restant
+      svcSinceBreak   = driveSinceBreak;
     } else {
       driveSinceBreak += segDrive;
       svcSinceBreak   += segDrive;
     }
-    // R7 : pause service — s'intercale pendant le trajet suivant (approx. conservative)
+
     if (svcSinceBreak >= RSE_SVC) {
-      rseExtra += RSE_PSVC;
-      svcSinceBreak = 0;
+      rseExtra      += RSE_PSVC;
+      svcSinceBreak  = 0;
     }
 
-    km += d.km;
-    var arrival = curseur + segDrive + rseExtra;
+    dureeRoute += segDrive + rseExtra;
 
-    // Le lundi, les réceptions n'ouvrent qu'à 7h30 (pas de service du dimanche)
-    if (jour === 'Lundi' && arrival < 450) return { error: 'hors_creneau', flux: f };
+    var svc = (typeof getTempsDecharge === 'function')
+      ? getTempsDecharge(parseFloat(arret.utAffecte || arret.ut) || 0)
+      : 15;
 
-        var cren = null;
-    for (var ci = 0; ci < crens.length; ci++) {
-      var c = crens[ci];
-      var cDebut = c.debut, cFin = c.fin;
+    deliveryTimes.push({
+      magasin:  arret.magasin,
+      debutRel: dureeRoute,
+      finRel:   dureeRoute + svc,
+      svc:      svc
+    });
 
-      // Cas 1 : créneau normal (fin > debut), arrivée dans [debut, fin]
-      if (cFin > cDebut) {
-        if (arrival >= cDebut && arrival <= cFin) { cren = c; break; }
-        // Cas 1b : arrivée après minuit (>= 1440), créneau du lendemain
-        if (arrival >= 1440 && arrival >= cDebut + 1440 && arrival <= cFin + 1440) {
-          cren = { debut: cDebut + 1440, fin: cFin + 1440 }; break;
-        }
-      }
-      // Cas 2 : créneau nocturne enjambant minuit (fin < debut, ex: 22h→05h)
-      // Valide si arrivée APRÈS debut OU AVANT fin
-      else if (cFin < cDebut) {
-        if (arrival >= cDebut || arrival <= cFin) {
-          // Normaliser fin pour que fin > debut (ajouter 1440 à fin)
-          cren = { debut: cDebut, fin: cFin + 1440 }; break;
-        }
-        // Cas 2b : arrivée après minuit du lendemain
-        if (arrival >= 1440 && arrival <= cFin + 1440) {
-          cren = { debut: cDebut, fin: cFin + 1440 }; break;
-        }
-      }
-    }
-    if (!cren) return { error: 'hors_creneau', flux: f };
-    var svc = getTempsDecharge(parseFloat(f.utAffecte !== undefined ? f.utAffecte : f.ut) || 0);
-    if (arrival + svc > cren.fin) return { error: 'hors_creneau', flux: f };
-    deliveryTimes.push({ magasin: f.magasin, start: arrival, end: arrival + svc });
     svcSinceBreak += svc;
-    curseur = arrival + svc;
-    lieu = f.magasin;
+    dureeRoute    += svc;
+    lieu           = arret.magasin;
   }
 
-  var dRet = _afOpt_getDist(dm, lieu, ts.retour);
-  if (dRet) {
-    var segRet = dRet.m;
-    var rseRet = 0;
-    if (driveSinceBreak + segRet > RSE_CYCLE) {
-      rseRet = RSE_PAUSE;
-      svcSinceBreak = segRet - (RSE_CYCLE - driveSinceBreak); // drive après la pause R6
-    } else {
-      svcSinceBreak += segRet;
-    }
-    if (svcSinceBreak >= RSE_SVC) rseRet += RSE_PSVC; // R7 sur le retour
-    km += dRet.km;
-    curseur += segRet + rseRet;
-  }
+  var dRet = _afOpt_getDist(dm, lieu, entrepot);
+  if (dRet) dureeRoute += dRet.m;
 
-  var finMinReel = curseur + (ts.admDur || 0);
-  return { valid: true, finMin: curseur, finMinReel: finMinReel, km: km, deliveryTimes: deliveryTimes };
+  return { valid: true, dureeRoute: dureeRoute, deliveryTimes: deliveryTimes };
 }
 
-function _afOpt_calculerCout(fluxList, ts, sim) {
-  if (!sim || !sim.valid) return Infinity;
-  var kpi = AppState.kpiParams;
-  var hasFrais = fluxList.some(function(f) {
-    var m = (f.marchandise || '').toUpperCase();
-    return m === 'FL' || m === 'PF' || m === 'SURG';
-  });
-  var cKm = hasFrais ? (kpi.coutKmFrais || 0.55) : (kpi.coutKmSec || 0.45);
-  var dureeH = (sim.finMin - ts.offsetMin) / 60;
-  return (kpi.coutFixe !== undefined ? kpi.coutFixe : 10) + sim.km * cKm + dureeH * (kpi.coutHJour || 35);
-}
+function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDur) {
+  chgtDur = chgtDur || 30;
+  admDur  = admDur  || 15;
+  var SETUP = chgtDur + admDur;
 
-var _JOUR_MARC = ['PGC', 'NAL', 'BSA'];
-function _afOpt_validateCandidate(ts, fluxOrd, dm, jour) {
-  if (_afOpt_utTotal(fluxOrd) > ts.capacite + 0.01) return { valid: false, reason: 'capacite' };
-  var r2 = validerCompatibiliteMarchandises(fluxOrd);
-  if (!r2.valide) return { valid: false, reason: 'r2_incompatible' };
-    // R3 — Marchandises "jour" interdites de nuit (22h00 → 06h00)
-  var departEstNuit = (ts.offsetMin >= 22 * 60 || ts.offsetMin < 6 * 60);
-  if (departEstNuit) {
-    for (var ji = 0; ji < fluxOrd.length; ji++) {
-      if (_JOUR_MARC.indexOf((fluxOrd[ji].marchandise || '').toUpperCase()) >= 0) {
-        return { valid: false, reason: 'r3_horaire' };
-      }
-    }
-  }
-   var sim = _afOpt_simulerRoute(ts, fluxOrd, dm, jour);
-  // Accepter les deux formes de rejet : { error } et { valid: false, reason }
-  if (!sim || sim.error) {
-    return { valid: false, reason: sim ? sim.error : 'sim_null', skipFlux: sim ? sim.flux : [] };
-  }
-  if (!sim.valid) {
-    return { valid: false, reason: sim.reason || 'sim_invalide', skipFlux: sim.flux };
-  }
-  // Limite légale absolue : 11h jour, 10h nuit — vérifiée sur la durée RÉELLE
-  // (finMinReel inclut décrochage + pauses RSE R6 estimées, comme le gantt réel)
-    var finMin  = sim.finMinReel || sim.finMin || (ts.offsetMin + 60); // fallback conservateur
-  var tourDur = finMin - ts.offsetMin;
-  var isNuit  = (ts.offsetMin >= 22 * 60 || ts.offsetMin < 6 * 60);
-  var limiteShift = isNuit ? 10 * 60 : 11 * 60;
+  var sim = _afOpt_simulerGroupe(entrepot, arrets, dm, jour);
+  if (!sim.valid) return [];
 
-  if (isNaN(tourDur) || tourDur > limiteShift) {
-    return { valid: false, reason: 'tour_trop_long' };
-  }
+  var validSegments = [{ debut: -1440, fin: 2880 }];
 
-    // Vérifier les livraisons simultanées dans le même magasin
-  if (sim.deliveryTimes && sim.deliveryTimes.length > 0) {
-    for (var dti = 0; dti < sim.deliveryTimes.length; dti++) {
-      var dt = sim.deliveryTimes[dti];
-      var slots = _afOpt_storeSlots[dt.magasin];
-      if (slots) {
-        for (var si = 0; si < slots.length; si++) {
-          // Chevauchement : deux livraisons au même magasin en même temps
-          if (dt.start < slots[si].end && dt.end > slots[si].start) {
-            return { valid: false, reason: 'conflit_simultane', skipFlux: null };
-          }
-        }
-      }
-    }
-  }
+  for (var i = 0; i < arrets.length; i++) {
+    var arret = arrets[i];
+    var crens = _afOpt_getCartoCreneau(arret.magasin, jour, arret.marchandise);
+    if (!crens || !crens.length) return [];
+    var dt = sim.deliveryTimes[i];
+    if (!dt) return [];
 
-  return { valid: true, sim: sim, cout: _afOpt_calculerCout(fluxOrd, ts, sim) };
-}
+    var crensSegments = [];
+    crens.forEach(function(c) {
+      var cFin = (c.fin < c.debut) ? c.fin + 1440 : c.fin;
+      var tMin, tMax;
 
-function _afOpt_totalCout(states) {
-  var t = 0;
-  Object.keys(states).forEach(function(tid) { if (states[tid].flux.length > 0) t += states[tid].cout; });
-  return t;
-}
+      tMin = c.debut - SETUP - dt.debutRel;
+      tMax = cFin   - SETUP - dt.debutRel - dt.svc;
+      if (tMax > tMin) crensSegments.push({ debut: tMin, fin: tMax });
 
-function _afOpt_deepCopyStates(states) {
-  var copy = {};
-  Object.keys(states).forEach(function(tid) {
-    var s = states[tid];
-    var fx = s.flux.map(function(f) { var c = {}; for (var k in f) if (f.hasOwnProperty(k)) c[k] = f[k]; return c; });
-    copy[tid] = { tid:s.tid, capacite:s.capacite, entrepot:s.entrepot, retour:s.retour,
-      admDur:s.admDur, chgtDur:s.chgtDur, offsetMin:s.offsetMin, flux:fx, cout:s.cout,
-      autoCreated:s.autoCreated, offsetFixed:s.offsetFixed };
-  });
-  return copy;
-}
-
-// ── Gestion tours / modules ───────────────────────────
-
-function _afOpt_genTid() {
-  var allTids = {};
-  AppState.moduleM0.tours.forEach(function(t) { allTids[t] = true; });
-  AppState.modules.forEach(function(m) { m.tours.forEach(function(t) { allTids[t] = true; }); });
-  (AppState.tourneesLocales || []).forEach(function(t) { allTids[t[0]] = true; });
-  _afOpt_autoCreatedTids.forEach(function(t) { allTids[t] = true; });
-  var n = 1, tid = '_AF' + (n < 10 ? '0' : '') + n;
-  while (allTids[tid]) { n++; tid = '_AF' + (n < 10 ? '0' : '') + n; }
-  return tid;
-}
-
-function _afOpt_creerTournee(entrepot, offsetMin, finMin, marc, jour, admDurOvr) {
-  var tid = _afOpt_genTid();
-  var admDurStore = (admDurOvr !== undefined) ? admDurOvr : 15;
-  if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
-  AppState.tourneesLocales.push([tid, 33, entrepot, admDurStore, 30, 'Non', marc || 'PGC', jour || AppState.jourActif]);
-
-  // Recherche d'un module disponible (auto-créé ou existant) :
-  //   1. D'abord dans _afOpt_entrepotModules (suivi actif, plus rapide)
-  //   2. Sinon dans tous les modules AppState du même entrepôt
-  // Critère : le dernier tour du module se termine avant offsetMin ET la durée totale du shift
-  //           ne dépasserait pas 11h (jour) / 10h (nuit) après ajout de ce tour.
-  var modId = null;
-  var endMinChoisi = Infinity;
-  var tourFinMin = finMin || offsetMin + 120;
-  var isNuit = offsetMin >= 22 * 60 || offsetMin < 6 * 60;
-  var maxShiftCreer = isNuit ? 10 * 60 : 11 * 60;
-
-  // Chercher dans les modules déjà trackés (auto-créés + existants déjà évalués)
-  var mods = _afOpt_entrepotModules[entrepot] || [];
-  for (var mi = 0; mi < mods.length; mi++) {
-    var m = mods[mi];
-    if (m.endMin <= offsetMin && (tourFinMin - m.firstOffsetMin) <= maxShiftCreer) {
-      if (modId === null || m.endMin > endMinChoisi) { modId = m.modId; endMinChoisi = m.endMin; } // latest fit
-    }
-  }
-  if (modId) {
-    // Mettre à jour l'endMin du module retenu
-    for (var mi2 = 0; mi2 < mods.length; mi2++) {
-      if (mods[mi2].modId === modId) { mods[mi2].endMin = tourFinMin; break; }
-    }
-  }
-
-  if (!modId) {
-    // Chercher dans les modules existants (user-créés) pas encore dans _afOpt_entrepotModules
-    var allMods = [AppState.moduleM0].concat(AppState.modules);
-    for (var ami = 0; ami < allMods.length; ami++) {
-      var am = allMods[ami];
-      // Ignorer les modules auto-créés déjà dans _afOpt_entrepotModules
-      if (_afOpt_autoCreatedModIds.indexOf(am.id) >= 0) continue;
-      if (am.tours.length === 0) continue;
-      // Calculer l'heure de fin du dernier tour du module (depuis modulesOffsets)
-      var lastEndEst = 0;
-      var firstOffEst = Infinity;
-      for (var ti = 0; ti < am.tours.length; ti++) {
-        var tOff = AppState.modulesOffsets[am.id + '_' + am.tours[ti]] || 6 * 60;
-        if (tOff < firstOffEst) firstOffEst = tOff;
-        // Heure de fin estimée = offset + 4h (estimation conservative pour tours existants)
-        var tEnd = tOff + 4 * 60;
-        if (tEnd > lastEndEst) lastEndEst = tEnd;
-      }
-      // Vérifier si l'entrepôt de ce module correspond
-      // (on teste via le tourState si disponible)
-      var firstTid = am.tours[0];
-      var entrepotMod = null;
-      if (AppState.tourneesLocales) {
-        for (var tli = 0; tli < AppState.tourneesLocales.length; tli++) {
-          if (String(AppState.tourneesLocales[tli][0]) === firstTid) {
-            entrepotMod = AppState.tourneesLocales[tli][2]; break;
-          }
-        }
-      }
-      if (entrepotMod !== entrepot) continue;
-      if (lastEndEst <= offsetMin && (tourFinMin - firstOffEst) <= maxShiftCreer) {
-        modId = am.id;
-        // Enregistrer ce module dans _afOpt_entrepotModules pour les prochains appels
-        if (!_afOpt_entrepotModules[entrepot]) _afOpt_entrepotModules[entrepot] = [];
-        _afOpt_entrepotModules[entrepot].push({ modId: am.id, firstOffsetMin: firstOffEst, endMin: tourFinMin });
-        break;
-      }
-    }
-  }
-
-  if (!modId) {
-    // Aucun module disponible → créer un nouveau shift chauffeur
-    var nums = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g, '')) || 0; });
-    var nxt = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
-    modId = 'M' + nxt;
-    AppState.modules.push({ id: modId, tours: [] });
-    _afOpt_autoCreatedModIds.push(modId);
-    if (!_afOpt_entrepotModules[entrepot]) _afOpt_entrepotModules[entrepot] = [];
-    _afOpt_entrepotModules[entrepot].push({ modId: modId, firstOffsetMin: offsetMin, endMin: tourFinMin });
-  }
-
-  assignerTourneeModule(modId, tid, offsetMin);
-  _afOpt_autoCreatedTids.push(tid);
-  return tid;
-}
-
-function _afOpt_cleanupPreviousRun() {
-  _afOpt_autoCreatedTids.forEach(function(tid) {
-    var allMods = [AppState.moduleM0].concat(AppState.modules);
-    allMods.forEach(function(m) {
-      var idx = m.tours.indexOf(tid);
-      if (idx >= 0) { m.tours.splice(idx, 1); delete AppState.modulesOffsets[m.id + '_' + tid]; }
+      tMin = c.debut + 1440 - SETUP - dt.debutRel;
+      tMax = cFin   + 1440 - SETUP - dt.debutRel - dt.svc;
+      if (tMax > tMin) crensSegments.push({ debut: tMin, fin: tMax });
     });
-    AppState.tourneesLocales = (AppState.tourneesLocales || []).filter(function(t) {
-      return String(t[0]) !== tid;
-    });
-    delete AppState.planLocal[tid];
-    if (AppState.tourneeOverrides) delete AppState.tourneeOverrides[tid];
-    if (AppState.tourneeRemorque)  delete AppState.tourneeRemorque[tid];
-  });
-  AppState.modules = AppState.modules.filter(function(m) {
-    return _afOpt_autoCreatedModIds.indexOf(m.id) < 0 || m.tours.length > 0;
-  });
-  _afOpt_autoCreatedTids = [];
-  _afOpt_autoCreatedModIds = [];
-  _afOpt_entrepotModules = {};
-}
+    if (!crensSegments.length) return [];
 
-function _afOpt_computeBestDeparture(entrepot, magasin, marc, dm, jour) {
-  var crens = _afOpt_getCartoCreneau(magasin, jour, marc);
-  var admDur = 15, chgtDur = 30;
-  if (!crens || crens.length === 0) return 6 * 60;
-  var d = _afOpt_getDist(dm, entrepot, magasin);
-  var travel = d ? d.m : 0;
-  var minArrival = (jour === 'Lundi') ? 450 : 0;
-
-  var bestOffset = null;
-  var bestDebut  = Infinity;
-
-  for (var i = 0; i < crens.length; i++) {
-    var c = crens[i];
-    var cDebut = c.debut;
-    var cFin   = c.fin;
-
-    // Déterminer si c'est un créneau nocturne :
-    // Après parsePlage, un créneau 22h→05h a debut=1320, fin=1740 (1320+1440 > 1320)
-    // Un créneau diurne 08h→12h a debut=480, fin=720
-    // Un créneau tôt matin 06h→09h (lendemain) a debut=1830, fin=2100
-    var isNocturne = (cDebut >= 22 * 60); // commence après 22h
-
-    var targetArrival;
-    if (isNocturne) {
-      // Arriver au début du créneau nocturne
-      targetArrival = cDebut;
-    } else if (cDebut < 6 * 60) {
-      // Créneau très tôt (ex: debut=1830 = 06h du lendemain)
-      targetArrival = cDebut;
-    } else {
-      // Créneau diurne normal
-      targetArrival = Math.max(cDebut, minArrival);
-    }
-
-    if (targetArrival < minArrival) continue;
-
-    var offsetMin = targetArrival - travel - admDur - chgtDur;
-
-    // Pour les créneaux nocturnes, autoriser un départ avant 6h si nécessaire
-    // (ex: créneau 22h avec long trajet → départ 20h → offsetMin=1200 → OK)
-    // Pour les créneaux diurnes, plancher à 6h
-    if (!isNocturne && offsetMin < 6 * 60) {
-      offsetMin = 6 * 60;
-    }
-
-    // Choisir le créneau le plus tôt dans la journée (évite les départs inutilement tardifs)
-    if (offsetMin < bestDebut) {
-      bestDebut  = offsetMin;
-      bestOffset = offsetMin;
-    }
-  }
-
-  return bestOffset !== null ? bestOffset : 6 * 60;
-}
-
-// ── Phase 1 — Construction heuristique (chunked) ──────
-
-function _afOpt_phase1Chunked(fluxList, tourStates, dm, jour, onProgress, onDone) {
-  var CHUNK = 3;
-  var fi = 0, total = fluxList.length;
-  var skippedDist = [], skippedCarto = [], unplanned = [];
-
-  function processChunk() {
-    if (_afOpt_cancelled) { onDone({ tourStates: tourStates, skippedDist: skippedDist, skippedCarto: skippedCarto, unplanned: unplanned }); return; }
-    var end = Math.min(fi + CHUNK, total);
-    for (; fi < end; fi++) {
-      var flux = fluxList[fi];
-      var fluxItem = { magasin: flux.magasin, marchandise: flux.marchandise,
-        ut: flux.ut, utAffecte: flux.ut, entrepot: flux.entrepot,
-        embDelai: flux.embDelai || 0, repriseEmb: flux.repriseEmb || 'Non' };
-
-      // Option A — insertion dans tournée existante (même entrepôt)
-      // Limite souple 5h : évite les tournées très longues qui bloquent le chaînage.
-            var SOFT_MAX_SERVICE = 5 * 60;
-      // MARGE_PAUSES : absorbe les pauses R6 (45 min) et R7 (30 min) non calculées
-      // par l'estimateur. Activée dès que la tournée dépasse 3h de service effectif.
-      var MARGE_PAUSES_MIN = 45; // 1 pause R6 typique
-      var SEUIL_PAUSE_MIN  = 3 * 60; // 3h de service = risque de pause imminente
-
-      var bestA = { cout: Infinity, tid: null };
-      var skipReason = null;
-      var tids = Object.keys(tourStates);
-      outer: for (var ti = 0; ti < tids.length; ti++) {
-        var tid = tids[ti];
-        var ts = tourStates[tid];
-        if (ts.entrepot !== flux.entrepot) continue;
-        if (ts.flux.length > 0) {
-          var deptMin   = ts.offsetMin + (ts.admDur || 15) + (ts.chgtDur || 30);
-          var curFinMin = ts._lastFinMin || deptMin;
-          var dureeService = curFinMin - deptMin;
-
-          // Ajouter une marge forfaitaire si la tournée approche ou dépasse 3h
-          // pour compenser les pauses R6/R7 que _afOpt_simulerRoute ne prédit pas
-          var margeActive = (dureeService >= SEUIL_PAUSE_MIN) ? MARGE_PAUSES_MIN : 0;
-
-          if (dureeService + margeActive >= SOFT_MAX_SERVICE) continue;
-        }
-        for (var pos = 0; pos <= ts.flux.length; pos++) {
-          var cand = ts.flux.slice(0, pos).concat([fluxItem]).concat(ts.flux.slice(pos));
-          var res = _afOpt_validateCandidate(ts, cand, dm, jour);
-          if (res.valid) {
-            var marginal = res.cout - ts.cout;
-            if (marginal < bestA.cout) bestA = { cout: marginal, tid: tid, pos: pos, cand: cand, fullCout: res.cout, sim: res.sim };
-          } else if (res.reason === 'dist_manquante') {
-            // Seule l'absence entrepôt→magasin rend le flux impossible (distance de base).
-            // Une distance inter-magasin manquante = juste cette position ne fonctionne pas.
-            if (!_afOpt_getDist(dm, ts.entrepot, fluxItem.magasin)) { skipReason = 'dist'; break outer; }
-            // sinon : essayer une autre position dans cette tournée (continue implicite)
-          } else if (res.reason === 'carto_manquante' || res.reason === 'carto_vide') { skipReason = 'carto'; break outer; }
-        }
-      }
-      if (skipReason === 'dist')  { skippedDist.push(flux);  continue; }
-      if (skipReason === 'carto') { skippedCarto.push(flux); continue; }
-
-            // Option B — nouvelle tournée dédiée
-      var bestB = null;
-      var offB = _afOpt_computeBestDeparture(flux.entrepot, flux.magasin, flux.marchandise, dm, jour);
-
-      // Vérification créneau nocturne : si le flux a un créneau enjambant minuit,
-      // s'assurer que l'offset calculé est cohérent (dans la plage 22h–06h)
-      var crensB = _afOpt_getCartoCreneau(flux.magasin, jour, flux.marchandise);
-      if (crensB && crensB.length > 0) {
-        var cB = crensB[0];
-        // Créneau nocturne détecté si fermeture < ouverture
-        if (cB.fin < cB.debut) {
-          // L'offset doit être >= ouverture OU <= fermeture (en minutes)
-          var offBInCreneau = (offB >= cB.debut || offB <= cB.fin);
-          if (!offBInCreneau) {
-            // Recaler sur l'ouverture du créneau nocturne
-            offB = cB.debut;
-          }
-        }
-      }
-
-      var tsNew = { tid: '__new__', capacite: 33, entrepot: flux.entrepot, retour: flux.entrepot,
-        admDur: 15, chgtDur: 30, offsetMin: offB, flux: [], cout: 0, autoCreated: true };
-      var resB = _afOpt_validateCandidate(tsNew, [fluxItem], dm, jour);
-      if (resB.valid) {
-        bestB = { cout: resB.cout, offB: offB, finB: resB.sim ? resB.sim.finMin : offB + 120 };
-      }
-
-      // Décision : comparer coût marginal (A) vs coût total nouvelle tournée (B)
-            function _enregistrerSlots(sim, tid) {
-        if (!sim || !sim.deliveryTimes) return;
-        sim.deliveryTimes.forEach(function(dt) {
-          if (!_afOpt_storeSlots[dt.magasin]) _afOpt_storeSlots[dt.magasin] = [];
-          _afOpt_storeSlots[dt.magasin].push({ start: dt.start, end: dt.end, tid: tid });
-        });
-      }
-
-      if (bestA.tid && (!bestB || bestA.cout <= bestB.cout)) {
-        tourStates[bestA.tid].flux = bestA.cand;
-        tourStates[bestA.tid].cout = bestA.fullCout;
-        if (bestA.sim) {
-          tourStates[bestA.tid]._lastFinMin = bestA.sim.finMin;
-          _enregistrerSlots(bestA.sim, bestA.tid);
-        }
-      } else if (bestB) {
-        var newTid = _afOpt_creerTournee(flux.entrepot, bestB.offB, bestB.finB, flux.marchandise, jour);
-        tourStates[newTid] = { tid: newTid, capacite: 33, entrepot: flux.entrepot, retour: flux.entrepot,
-          admDur: 15, chgtDur: 30, offsetMin: bestB.offB, finMin: bestB.finB, flux: [fluxItem], cout: bestB.cout, autoCreated: true };
-        if (bestB.sim) _enregistrerSlots(bestB.sim, newTid);
-      } else if (bestA.tid) {
-        tourStates[bestA.tid].flux = bestA.cand;
-        tourStates[bestA.tid].cout = bestA.fullCout;
-      } else {
-        unplanned.push(flux);
-      }
-    }
-    onProgress(fi / total, 'Phase 1 — Construction (' + fi + '/' + total + ' flux)');
-    if (fi >= total) {
-      onDone({ tourStates: tourStates, skippedDist: skippedDist, skippedCarto: skippedCarto, unplanned: unplanned });
-    } else {
-      setTimeout(processChunk, 0);
-    }
-  }
-  processChunk();
-}
-
-// ── Phase 2 — LNS 500 itérations (chunked) ───────────
-
-function _afOpt_phase2LNS(initStates, dm, jour, startCout, onProgress, onDone) {
-  var NUM_ITER = 500, CHUNK_SIZE = 8;
-  var totalFlux = 0;
-  Object.keys(initStates).forEach(function(tid) { totalFlux += initStates[tid].flux.length; });
-  var NUM_DESTROY = Math.max(2, Math.floor(totalFlux * 0.15));
-  var START_TEMP = Math.max(startCout * 0.05, 10);
-  var COOLING_RATE = 0.995;
-  var currentSol = _afOpt_deepCopyStates(initStates);
-  var bestSol    = _afOpt_deepCopyStates(initStates);
-  var bestCout   = startCout;
-  var temp       = START_TEMP;
-
-  function step(i) {
-    if (_afOpt_cancelled || i >= NUM_ITER) { onDone(bestSol); return; }
-
-    // Destroy: choisir NUM_DESTROY flux aléatoires
-    var all = [];
-    Object.keys(currentSol).forEach(function(tid) {
-      currentSol[tid].flux.forEach(function(f, idx) { all.push({ tid: tid, idx: idx, f: f }); });
-    });
-    var nd = Math.min(NUM_DESTROY, all.length);
-    for (var si = all.length - 1; si > 0; si--) {
-      var sj = Math.floor(Math.random() * (si + 1));
-      var tmp = all[si]; all[si] = all[sj]; all[sj] = tmp;
-    }
-    var orphans = [], toRem = {};
-    all.slice(0, nd).forEach(function(item) {
-      orphans.push(item.f);
-      if (!toRem[item.tid]) toRem[item.tid] = {};
-      toRem[item.tid][item.idx] = true;
-    });
-
-    var partial = _afOpt_deepCopyStates(currentSol);
-    Object.keys(toRem).forEach(function(tid) {
-      var rm = toRem[tid];
-      partial[tid].flux = partial[tid].flux.filter(function(f, idx) { return !rm[idx]; });
-      if (partial[tid].flux.length > 0) {
-        var s2 = _afOpt_simulerRoute(partial[tid], partial[tid].flux, dm, jour);
-        partial[tid].cout = s2.valid ? _afOpt_calculerCout(partial[tid].flux, partial[tid], s2) : partial[tid].cout;
-      } else { partial[tid].cout = 0; }
-    });
-
-    // Repair: réinsérer les orphelins
-        // Repair: réinsérer les orphelins avec mise à jour des storeSlots
-    // Snapshot des storeSlots avant le repair (pour rollback si nécessaire)
-    var _lnsSlotsSave = {};
-    Object.keys(_afOpt_storeSlots).forEach(function(mag) {
-      _lnsSlotsSave[mag] = _afOpt_storeSlots[mag].slice();
-    });
-
-    // Reconstruire _afOpt_storeSlots depuis partial (état après destroy)
-    _afOpt_storeSlots = {};
-    Object.keys(partial).forEach(function(tid) {
-      var ts2 = partial[tid];      if (!ts2 || !ts2.flux || ts2.flux.length === 0) return;
-      var sim2 = _afOpt_simulerRoute(ts2, ts2.flux, dm, jour);
-      if (sim2 && sim2.valid && sim2.deliveryTimes) {
-        sim2.deliveryTimes.forEach(function(dt) {          if (!_afOpt_storeSlots[dt.magasin]) _afOpt_storeSlots[dt.magasin] = [];
-          _afOpt_storeSlots[dt.magasin].push({ start: dt.start, end: dt.end, tid: tid });
-        });      }
-    });
-
-    orphans.forEach(function(orphan) {
-      var bPos = null, bMarg = Infinity;
-      Object.keys(partial).forEach(function(tid) {
-        var ts2 = partial[tid];
-        if (ts2.entrepot !== orphan.entrepot) return;
-        for (var p2 = 0; p2 <= ts2.flux.length; p2++) {          var cand2 = ts2.flux.slice(0, p2).concat([orphan]).concat(ts2.flux.slice(p2));
-          var res2 = _afOpt_validateCandidate(ts2, cand2, dm, jour);
-          if (res2.valid) {
-            var mg = res2.cout - ts2.cout;            if (mg < bMarg) { bMarg = mg; bPos = { tid: tid, pos: p2, cand: cand2, fc: res2.cout, sim: res2.sim }; }          }
-        }
+    var newValid = [];
+    validSegments.forEach(function(vs) {
+      crensSegments.forEach(function(cs) {
+        var d = Math.max(vs.debut, cs.debut);
+        var f = Math.min(vs.fin,   cs.fin);
+        if (f > d) newValid.push({ debut: d, fin: f });
       });
-      if (bPos) {        partial[bPos.tid].flux = bPos.cand;
-        partial[bPos.tid].cout = bPos.fc;
-        // Mettre à jour storeSlots avec les nouvelles livraisons
-        if (bPos.sim && bPos.sim.deliveryTimes) {
-          bPos.sim.deliveryTimes.forEach(function(dt) {
-            if (!_afOpt_storeSlots[dt.magasin]) _afOpt_storeSlots[dt.magasin] = [];
-            _afOpt_storeSlots[dt.magasin].push({ start: dt.start, end: dt.end, tid: bPos.tid });
-          });
-        }
-      }
     });
 
-    // Si la solution partielle est rejetée (delta >= 0 et pas acceptée), restaurer les storeSlots    // Note : la restauration se fait dans le bloc d'acceptation ci-dessous
-
-    var newCout = _afOpt_totalCout(partial);    var curCout = _afOpt_totalCout(currentSol);
-    var delta = newCout - curCout;
-    if (delta < 0 || (temp > 0.001 && Math.random() < Math.exp(-delta / temp))) {
-      currentSol = partial;
-      // _afOpt_storeSlots est déjà à jour (reconstruit depuis partial dans le repair)
-      if (newCout < bestCout) { bestSol = _afOpt_deepCopyStates(currentSol); bestCout = newCout; }    } else {
-      // Solution rejetée → restaurer les storeSlots de la solution courante
-      _afOpt_storeSlots = _lnsSlotsSave;    }
-    temp *= COOLING_RATE;
-
-    if ((i + 1) % CHUNK_SIZE === 0) {
-      var p2 = (i + 1) / NUM_ITER;
-      onProgress(p2, 'Phase 2 — LNS (' + (i+1) + '/' + NUM_ITER + ') — Meilleur coût : ' + Math.round(bestCout));
-      setTimeout(function(ii) { return function() { step(ii); }; }(i + 1), 0);
-    } else { step(i + 1); }
-  }
-  step(0);
-}
-
-// ── Phase 3 — Résolution navettes ────────────────────
-
-function _afOpt_resolveNavettes(unplanned, tourStates, dm, jour) {
-  var resolved = [], still = [];
-  unplanned.forEach(function(flux) {
-    var solved = false;
-    var tids = Object.keys(tourStates);
-    for (var ti = 0; ti < tids.length && !solved; ti++) {
-      var tid = tids[ti];
-      var ts = tourStates[tid];
-      if (ts.entrepot === flux.entrepot) continue;
-      // Flux livré depuis l'entrepôt du tour (la navette l'y amène)
-      var fi2 = { magasin: flux.magasin, marchandise: flux.marchandise,
-        ut: flux.ut, utAffecte: flux.ut, entrepot: ts.entrepot,
-        embDelai: flux.embDelai || 0, repriseEmb: flux.repriseEmb || 'Non' };
-      for (var pos = 0; pos <= ts.flux.length && !solved; pos++) {
-        var cand = ts.flux.slice(0, pos).concat([fi2]).concat(ts.flux.slice(pos));
-        var res = _afOpt_validateCandidate(ts, cand, dm, jour);
-        if (!res.valid) continue;
-        // Chercher un tour depuis flux.entrepot pour la navette
-        var navItem = { magasin: ts.entrepot, marchandise: flux.marchandise,
-          ut: flux.ut, utAffecte: flux.ut, entrepot: flux.entrepot, embDelai: 0, repriseEmb: 'Non', isNavette: true };
-        var navAssigned = false;
-        for (var ni = 0; ni < tids.length && !navAssigned; ni++) {
-          var nts = tourStates[tids[ni]];
-          if (nts.entrepot !== flux.entrepot) continue;
-          var navCand = nts.flux.concat([navItem]);
-          var navRes = _afOpt_validateCandidate(nts, navCand, dm, jour);
-          if (navRes.valid) {
-            nts.flux = navCand; nts.cout = navRes.cout;
-            ts.flux = cand; ts.cout = res.cout;
-            navAssigned = true;
-          }
-        }
-        if (!navAssigned) {
-          // Créer une nouvelle tournée pour la navette
-          var offNav = _afOpt_computeBestDeparture(flux.entrepot, ts.entrepot, flux.marchandise, dm, jour);
-          var tsNav = { tid:'__nav__', capacite:33, entrepot:flux.entrepot, retour:flux.entrepot,
-            admDur:15, chgtDur:30, offsetMin:offNav, flux:[], cout:0, autoCreated:true };
-          var navRes2 = _afOpt_validateCandidate(tsNav, [navItem], dm, jour);
-          if (navRes2.valid) {
-            var newNavTid = _afOpt_creerTournee(flux.entrepot, offNav, navRes2.sim ? navRes2.sim.finMin : offNav + 120, flux.marchandise, jour);
-            tourStates[newNavTid] = { tid:newNavTid, capacite:33, entrepot:flux.entrepot, retour:flux.entrepot,
-              admDur:15, chgtDur:30, offsetMin:offNav, flux:[navItem], cout:navRes2.cout, autoCreated:true };
-            ts.flux = cand; ts.cout = res.cout;
-            navAssigned = true;
-          }
-        }
-        if (navAssigned) {
-          AppState.navettesLibres.push({
-            _navetteId: '_AF_NAV_' + (++_afOpt_navetteCount),
-            entrepot: flux.entrepot, magasin: ts.entrepot,
-            ut: flux.ut, zoneEntrepot: flux.zoneEntrepot || '', zoneLivraison: '',
-            centreComm: '', marchandise: flux.marchandise, isNavette: true
-          });
-          resolved.push(flux);
-          solved = true;
-        }
-      }
-    }
-    if (!solved) still.push(flux);
-  });
-  return { resolved: resolved, stillUnplanned: still };
-}
-
-// ── Application du plan et rendu final ───────────────
-
-// Calcule l'heure de départ idéale pour un tour en fonction des créneaux de livraison.
-// Évite le problème du offsetMin=6h00 par défaut qui fausse le tri de la consolidation.
-function _afOpt_idealOffset(ts, dm, jour) {
-  if (!ts.flux || ts.flux.length === 0) return ts.offsetMin;  var earliest = Infinity;
-  for (var fi = 0; fi < ts.flux.length; fi++) {
-    var f = ts.flux[fi];
-    var crens = _afOpt_getCartoCreneau(f.magasin, jour, f.marchandise);
-    if (!crens || !crens.length) continue;
-    var d = _afOpt_getDist(dm, ts.entrepot, f.magasin);
-    var travelM = d ? d.m : 60;
-
-    // Utiliser le meilleur créneau (nocturne prioritaire si présent)
-    var bestCren = crens[0];
-    for (var ci = 0; ci < crens.length; ci++) {
-      if (crens[ci].debut >= 22 * 60 || crens[ci].fin < 6 * 60) {        bestCren = crens[ci]; break;
-      }
-    }
-
-    var dep = bestCren.debut - travelM - (ts.admDur || 15) - (ts.chgtDur || 30);
-    var isNocturne = (bestCren.debut >= 22 * 60 || bestCren.fin < 6 * 60);
-
-    // Plancher 6h uniquement pour les créneaux diurnes
-    if (!isNocturne) {
-      dep = Math.max(6 * 60, dep);
-    } else if (dep < 0) {
-      dep += 24 * 60; // normaliser si négatif
-    }
-
-    if (dep < earliest) earliest = dep;
-  }
-  return earliest === Infinity ? ts.offsetMin : earliest;
-}
-
-// ── Consolidation des modules (post-LNS) ─────────────
-// Traite TOUS les tours du jour actif (auto-créés ET existants) et les repackage
-// dans le minimum de modules en respectant les contraintes de shift réglementaires.
-// Chaînage flexible : si le chauffeur revient jusqu'à MAX_FLEX_MIN après le départ
-// prévu du tour suivant, on re-simule ce tour avec le départ décalé.
-function _afOpt_consolidateModules(tourStates, dm, jour) {
-  var MAX_SHIFT_JOUR = 660; // 11h
-  var MAX_SHIFT_NUIT = 600; // 10h
-
-  function _mxSh(firstOff) {
-    return (firstOff >= 22 * 60 || firstOff < 6 * 60) ? MAX_SHIFT_NUIT : MAX_SHIFT_JOUR;
-  }
-
-  // ── 1. Calculer l'offsetMin idéal et simuler chaque tour ──
-  // On recalcule l'offsetMin idéal depuis les créneaux de livraison pour corriger
-  // les tours figés à 6h00 par défaut — SAUF pour les tours issus d'un split
-  // (ts.offsetFixed = true) dont le départ est imposé par la fin du tour précédent.
-  var allTours = [];
-  Object.keys(tourStates).forEach(function(tid) {
-    var ts = tourStates[tid];
-    if (!ts || ts.flux.length === 0) return;
-    var effectiveOffset = (ts && ts.offsetFixed) ? ts.offsetMin : _afOpt_idealOffset(ts, dm, jour);
-    var tsAdj = (effectiveOffset !== ts.offsetMin)
-      ? { offsetMin: effectiveOffset, admDur: ts.admDur || 15, chgtDur: ts.chgtDur || 30,
-          entrepot: ts.entrepot, retour: ts.retour || ts.entrepot, capacite: ts.capacite || 33 }
-      : ts;
-    var sim = _afOpt_simulerRoute(tsAdj, ts.flux, dm, jour);
-    var finMin = (sim && sim.valid)
-      ? (sim.finMinReel || sim.finMin)   // durée réelle : inclut décrochage + RSE
-      : (effectiveOffset + (ts.admDur || 15) + (ts.chgtDur || 30) + 135); // fallback conservateur
-    allTours.push({
-      tid: tid,
-      entrepot: ts.entrepot,
-      offsetMin: effectiveOffset,
-      effectiveOffset: effectiveOffset,
-      finMin: finMin,
-      deliveryTimes: (sim && sim.deliveryTimes) || [],
-      isAuto: _afOpt_autoCreatedTids.indexOf(tid) >= 0
-    });
-  });
-  if (allTours.length === 0) return;
-
-  // ── 2. Retirer TOUS ces tours de leurs modules actuels ──
-  var removedFromMod = {}; // tid → ancienModId (pour réutiliser les modules vides)
-  allTours.forEach(function(at) {
-    var allMods = [AppState.moduleM0].concat(AppState.modules);
-    allMods.forEach(function(m) {
-      var idx = m.tours.indexOf(at.tid);
-      if (idx >= 0) {
-        removedFromMod[at.tid] = m.id;
-        m.tours.splice(idx, 1);
-        delete AppState.modulesOffsets[m.id + '_' + at.tid];
-      }
-    });
-  });
-
-  // ── 3. Supprimer tous les modules auto-créés vides ──
-  AppState.modules = AppState.modules.filter(function(m) {
-    return _afOpt_autoCreatedModIds.indexOf(m.id) < 0 || m.tours.length > 0;
-  });
-  _afOpt_autoCreatedModIds = [];
-
-  // ── 4. Constituer un pool de modules "coquilles vides" réutilisables ──
-  // Modules user-créés maintenant vides (tous leurs tours du jour viennent d'être retirés)
-  // → on peut les réutiliser comme bins sans créer de nouveaux modules.
-  var emptyShells = []; // [modId]
-  var allModsNow = [AppState.moduleM0].concat(AppState.modules);
-  allModsNow.forEach(function(m) {
-    if (m.id !== 'M0' && m.tours.length === 0 && _afOpt_autoCreatedModIds.indexOf(m.id) < 0) {
-      emptyShells.push(m.id);
-    }
-  });
-  var shellIdx = 0; // curseur dans emptyShells
-
-  // ── 5. Trier par offsetMin uniquement — heure de départ, pas par entrepôt ──
-  allTours.sort(function(a, b) { return a.offsetMin - b.offsetMin; });
-
-  // ── 6. Bin packing glouton — pool unique, score par affinité entrepôt/zone ──
-  // Chaque bin : {modId, firstOffsetMin, lastEndMin, lastEntrepot, lastTid}
-  // Priorité : même entrepôt libre (3000) > même entrepôt retardé (2000)
-  //          > même zone logistique (1000) > inter-zone (0)
-  // À égalité de priorité : "latest fit" (bin le plus récent gagne → modules plus denses)
-  var bins = [];
-
-  // Créneaux de livraison déjà assignés — empêche deux modules de livrer le même magasin en même temps
-  var storeSlots = {}; // { magasin: [{start, end}] }
-    function _heureEnMinutes(hStr) {
-    // Convertit "22:30" ou un entier (minutes) en minutes depuis minuit
-    if (typeof hStr === 'number') return hStr;
-    var parts = String(hStr).split(':');
-    return parseInt(parts[0], 10) * 60 + (parseInt(parts[1], 10) || 0);
-  }
-
-  function _dansCreneauNocturne(heureMin, ouvertureMin, fermetureMin) {
-    // Gère correctement les créneaux qui enjambent minuit (ex: 22:00 → 05:00)
-    if (fermetureMin < ouvertureMin) {
-      // Créneau nocturne : valide si APRÈS ouverture OU AVANT fermeture
-      return (heureMin >= ouvertureMin || heureMin <= fermetureMin);
-    } else {
-      // Créneau diurne : valide si ENTRE ouverture et fermeture
-      return (heureMin >= ouvertureMin && heureMin <= fermetureMin);
-    }
-  }
-
-  function _hasStoreConflict(dts) {
-    for (var _i = 0; _i < dts.length; _i++) {
-      var _dt = dts[_i], _slots = storeSlots[_dt.magasin];
-      if (!_slots) continue;
-      for (var _j = 0; _j < _slots.length; _j++) {
-        // Chevauchement standard (start/end sont des minutes absolues depuis minuit)
-        if (_dt.start < _slots[_j].end && _dt.end > _slots[_j].start) return true;
-      }
-    }
-    return false;
-  }
-
-  function _recordDeliveries(dts) {
-    for (var _i = 0; _i < dts.length; _i++) {
-      var _dt = dts[_i];
-      if (!storeSlots[_dt.magasin]) storeSlots[_dt.magasin] = [];
-      storeSlots[_dt.magasin].push({ start: _dt.start, end: _dt.end });
-    }
-  }
-
-  function _creneauCompatible(heureArriveeMin, creneauOuverture, creneauFermeture) {
-    // Point d'entrée unifié pour vérifier un créneau (diurne ou nocturne)
-    var ouv = _heureEnMinutes(creneauOuverture);
-    var fer = _heureEnMinutes(creneauFermeture);
-    return _dansCreneauNocturne(heureArriveeMin, ouv, fer);
-  }
-
-  allTours.forEach(function(at) {
-    var ts = tourStates[at.tid];
-
-    var bestBi = -1, bestScore = -Infinity;
-    var bestOff = at.offsetMin, bestFin = at.finMin;
-    // Mutation de retour si re-routage inter-dépôt nécessaire (même zone ou inter-zone)
-    var bestMutation = null; // {lastTid, newRetour, newFinLast}
-    var bestDTs = at.deliveryTimes || []; // horaires de livraison retenus pour le meilleur placement
-
-    for (var bi = 0; bi < bins.length; bi++) {
-      var bin = bins[bi];
-      var sameEnt  = bin.lastEntrepot === at.entrepot;
-      var sameZone = !sameEnt && memeZoneEntrepot(bin.lastEntrepot, at.entrepot);
-
-      if (sameEnt) {
-        // ── Cas A : même entrepôt, chauffeur libre ──
-        if (bin.lastEndMin <= at.offsetMin) {
-          if (!_hasStoreConflict(at.deliveryTimes || [])) {
-            var scA = 3000 + bin.lastEndMin;
-            if (scA > bestScore) {
-              bestBi = bi; bestScore = scA;
-              bestOff = at.offsetMin; bestFin = at.finMin;
-              bestMutation = null; bestDTs = at.deliveryTimes || [];
-            }
-          }
-        }
-        // ── Cas B : même entrepôt, chauffeur en retard → re-simulation ──
-        else if (ts) {
-          var adjB = { offsetMin: bin.lastEndMin, admDur: ts.admDur !== undefined ? ts.admDur : 15,
-                       chgtDur: ts.chgtDur || 30, entrepot: at.entrepot,
-                       retour: ts.retour || at.entrepot, capacite: ts.capacite || 33 };
-          var sB = _afOpt_simulerRoute(adjB, ts.flux, dm, jour);
-          if (sB && sB.valid && !_hasStoreConflict(sB.deliveryTimes || [])) {
-            var scB = 2000 + bin.lastEndMin;
-            if (scB > bestScore) {
-              bestBi = bi; bestScore = scB;
-              bestOff = bin.lastEndMin; bestFin = sB.finMinReel || sB.finMin;
-              bestMutation = null; bestDTs = sB.deliveryTimes || [];
-            }
-          }
-        }
-      } else if (bin.lastTid && ts) {
-        // ── Cas Z/C : re-routage du dernier tour du bin (retour → at.entrepot) ──
-        var zonePrio = sameZone ? 1000 : 0;
-        var tsLastR = tourStates[bin.lastTid];
-        if (!tsLastR || !tsLastR.flux || tsLastR.flux.length === 0) continue;
-        var lastAtR = null;
-        for (var ali = 0; ali < allTours.length; ali++) {
-          if (allTours[ali].tid === bin.lastTid) { lastAtR = allTours[ali]; break; }
-        }
-        if (!lastAtR) continue;
-        var tsLastAdjR = { offsetMin: lastAtR.effectiveOffset,
-          admDur: tsLastR.admDur !== undefined ? tsLastR.admDur : 15,
-          chgtDur: tsLastR.chgtDur || 30,
-          entrepot: tsLastR.entrepot, retour: at.entrepot,
-          capacite: tsLastR.capacite || 33 };
-        var sLastR = _afOpt_simulerRoute(tsLastAdjR, tsLastR.flux, dm, jour);
-        if (!sLastR || !sLastR.valid) continue;
-        var newFinLastR = sLastR.finMinReel || sLastR.finMin;
-        var adjR = { offsetMin: Math.max(at.offsetMin, newFinLastR), admDur: ts.admDur !== undefined ? ts.admDur : 15,
-          chgtDur: ts.chgtDur || 30, entrepot: at.entrepot,
-          retour: ts.retour || at.entrepot, capacite: ts.capacite || 33 };
-        var sR = _afOpt_simulerRoute(adjR, ts.flux, dm, jour);
-        if (!sR || !sR.valid || _hasStoreConflict(sR.deliveryTimes || [])) continue;
-        var scR = zonePrio + newFinLastR;
-        if (scR > bestScore) {
-          bestBi = bi; bestScore = scR;
-          bestOff = adjR.offsetMin; bestFin = sR.finMinReel || sR.finMin;
-          bestMutation = { lastTid: bin.lastTid, newRetour: at.entrepot, newFinLast: newFinLastR };
-          bestDTs = sR.deliveryTimes || [];
-        }
-      }
-    }
-
-    var modId;
-    if (bestBi >= 0) {
-      if (bestMutation) {
-        if (tourStates[bestMutation.lastTid]) tourStates[bestMutation.lastTid].retour = bestMutation.newRetour;
-      }
-      modId = bins[bestBi].modId;
-      bins[bestBi].lastEndMin   = bestFin;
-      bins[bestBi].lastEntrepot = at.entrepot;
-      bins[bestBi].lastTid      = at.tid;
-      _recordDeliveries(bestDTs);
-    } else {
-      // Nouveau bin : réutiliser une coquille vide ou créer un module
-      if (shellIdx < emptyShells.length) {
-        modId = emptyShells[shellIdx++];
+    newValid.sort(function(a, b) { return a.debut - b.debut; });
+    var merged = [];
+    newValid.forEach(function(seg) {
+      if (!merged.length || seg.debut > merged[merged.length - 1].fin) {
+        merged.push({ debut: seg.debut, fin: seg.fin });
       } else {
-        var nums = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g,''))||0; });
-        var nxt = (nums.length ? Math.max.apply(null,nums) : 0) + 1;
-        modId = 'M' + nxt;
-        AppState.modules.push({ id: modId, tours: [] });
-        _afOpt_autoCreatedModIds.push(modId);
+        merged[merged.length - 1].fin = Math.max(merged[merged.length - 1].fin, seg.fin);
       }
-      bins.push({ modId: modId, firstOffsetMin: at.offsetMin,
-                  lastEndMin: bestFin, lastEntrepot: at.entrepot, lastTid: at.tid });
-      bestOff = at.offsetMin;
-      _recordDeliveries(at.deliveryTimes || []);
-    }
+    });
 
-    at.effectiveOffset = bestOff;
-    at.finMin = bestFin;
-    at.modId  = modId;
-    if (ts && bestOff !== at.offsetMin) ts.offsetMin = bestOff;
-
-    // Affecter le tour au module retenu
-    var assigned = false;
-    if (AppState.moduleM0.id === modId) {
-      if (AppState.moduleM0.tours.indexOf(at.tid) < 0) AppState.moduleM0.tours.push(at.tid);
-      AppState.modulesOffsets[modId + '_' + at.tid] = at.effectiveOffset;
-      assigned = true;
-    }
-    if (!assigned) {
-      for (var mi = 0; mi < AppState.modules.length; mi++) {
-        if (AppState.modules[mi].id === modId) {
-          if (AppState.modules[mi].tours.indexOf(at.tid) < 0) AppState.modules[mi].tours.push(at.tid);
-          AppState.modulesOffsets[modId + '_' + at.tid] = at.effectiveOffset;
-          break;
-        }
-      }
-    }
-  });
-
-  // ── 6.5. Correction séquentielle R12 (anti-chevauchement) ──────────────────────────────
-  // Utilise calculerPlanningGantt pour les finMin (identique au Gantt, avec chaînage prevRetour)
-  // et _afOpt_simulerRoute pour la validation créneaux.
-  // Si un décalage viole les créneaux → éviction vers nouveau module à l'heure d'origine.
-
-  // Fonction utilitaire : calcul finMin via calculerPlanningGantt (même moteur que le Gantt)
-  function _finMinGantt(at65, ts65, offsetUsed, lieuDep65) {
-    if (!ts65 || !ts65.flux || ts65.flux.length === 0) return offsetUsed + 45;
-    var admG = ts65.admDur !== undefined ? ts65.admDur : 15;
-    var chgG = ts65.chgtDur || 30;
-    var retG = ts65.retour || ts65.entrepot;
-    var tS = offsetUsed + chgG + admG;
-    var blocs = calculerPlanningGantt(tS, ts65.flux, dm, [], retG, admG, lieuDep65 || ts65.entrepot);
-    if (blocs && blocs.length > 0) return blocs[blocs.length - 1].debut + blocs[blocs.length - 1].duree;
-    return tS + admG + 30;
+    validSegments = merged;
+    if (!validSegments.length) return [];
   }
 
-  // Phase 1 : recalcul des finMin par module avec chaînage prevRetour (= comportement Gantt exact)
-  // Validation créneaux simultanée — tours invalides marqués pour éviction
-  var modSeqMap = {};
-  allTours.forEach(function(at) {
-    if (!at.modId) return;
-    if (!modSeqMap[at.modId]) modSeqMap[at.modId] = [];
-    modSeqMap[at.modId].push(at);
-  });
+  return validSegments;
+}
 
-  var invalidAt65 = []; // {at, modId} — tours dont la simulation échoue (hors_creneau)
-  Object.keys(modSeqMap).forEach(function(mId65p1) {
-    var seq = modSeqMap[mId65p1].sort(function(a, b) { return a.effectiveOffset - b.effectiveOffset; });
-    var prevRet65 = null;
-    seq.forEach(function(at) {
-      var ts65 = tourStates[at.tid];
-      if (!ts65 || !ts65.flux || ts65.flux.length === 0) { prevRet65 = null; return; }
-      var admG = ts65.admDur !== undefined ? ts65.admDur : 15;
-      var chgG = ts65.chgtDur || 30;
-      // Validation créneaux
-      var adjV = { offsetMin: at.effectiveOffset, admDur: admG, chgtDur: chgG,
-                   entrepot: ts65.entrepot, retour: ts65.retour || ts65.entrepot,
-                   capacite: ts65.capacite || 33 };
-      var simV = _afOpt_simulerRoute(adjV, ts65.flux, dm, jour);
-      if (!simV || !simV.valid) {
-        invalidAt65.push({ at: at, modId: mId65p1 });
-        prevRet65 = null;
-        return;
-      }
-      // finMin via Gantt (avec chaînage du lieu de départ)
-      at.finMin = _finMinGantt(at, ts65, at.effectiveOffset, prevRet65 || ts65.entrepot);
-      prevRet65 = ts65.retour || ts65.entrepot;
+// ══════════════════════════════════════════════════════════════════
+// PHASE 1.4 — Permutations + meilleur ordre
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_permutations(arr) {
+  if (arr.length <= 1) return [arr.slice()];
+  var result = [];
+  for (var i = 0; i < arr.length; i++) {
+    var rest = arr.slice(0, i).concat(arr.slice(i + 1));
+    _afOpt_permutations(rest).forEach(function(perm) {
+      result.push([arr[i]].concat(perm));
     });
-  });
+  }
+  return result;
+}
 
-  // Évincer les tours invalides (hors_creneau) vers de nouveaux modules
-  invalidAt65.forEach(function(ev) {
-    var at = ev.at, ts65 = tourStates[at.tid];
-    for (var mi = 0; mi < AppState.modules.length; mi++) {
-      var idx = AppState.modules[mi].tours.indexOf(at.tid);
-      if (idx >= 0) { AppState.modules[mi].tours.splice(idx, 1); break; }
-    }
-    delete AppState.modulesOffsets[ev.modId + '_' + at.tid];
-    var nums = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g,''))||0; });
-    var nxtN = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
-    var newMN = 'M' + nxtN;
-    AppState.modules.push({ id: newMN, tours: [at.tid] });
-    _afOpt_autoCreatedModIds.push(newMN);
-    AppState.modulesOffsets[newMN + '_' + at.tid] = at.effectiveOffset;
-    at.modId = newMN;
-    // Recalculer finMin pour ce tour solo
-    if (ts65) at.finMin = _finMinGantt(at, ts65, at.effectiveOffset, ts65.entrepot);
-  });
+function _afOpt_findBestPermutation(groupe, dm, jour) {
+  var magasinsVus      = {};
+  var magasinsDistincts = [];
 
-  // Reconstruire modSeqMap après évictions
-  modSeqMap = {};
-  allTours.forEach(function(at) {
-    if (!at.modId) return;
-    if (!modSeqMap[at.modId]) modSeqMap[at.modId] = [];
-    modSeqMap[at.modId].push(at);
-  });
-
-  // Phase 2 : correction séquentielle R12 — chaque tour doit commencer après la fin du précédent
-  var evicted65 = [];
-  Object.keys(modSeqMap).forEach(function(modId65) {
-    var seq = modSeqMap[modId65].sort(function(a, b) { return a.effectiveOffset - b.effectiveOffset; });
-    var prevRet65p2 = null;
-    for (var si = 0; si < seq.length; si++) {
-      var at65 = seq[si];
-      var ts65 = tourStates[at65.tid];
-      if (si > 0) {
-        var prev65 = seq[si - 1];
-        if (at65.effectiveOffset < prev65.finMin) {
-          // Chevauchement détecté : pousser après la fin du précédent
-          var newOff65 = prev65.finMin;
-          if (!ts65 || !ts65.flux || ts65.flux.length === 0) {
-            at65.effectiveOffset = newOff65;
-            AppState.modulesOffsets[modId65 + '_' + at65.tid] = newOff65;
-            at65.finMin = newOff65 + 45;
-            prevRet65p2 = null;
-            continue;
-          }
-          var adj65 = { offsetMin: newOff65,
-                        admDur: ts65.admDur !== undefined ? ts65.admDur : 15,
-                        chgtDur: ts65.chgtDur || 30,
-                        entrepot: ts65.entrepot, retour: ts65.retour || ts65.entrepot,
-                        capacite: ts65.capacite || 33 };
-          var sim65 = _afOpt_simulerRoute(adj65, ts65.flux, dm, jour);
-          if (sim65 && sim65.valid) {
-            at65.effectiveOffset = newOff65;
-            AppState.modulesOffsets[modId65 + '_' + at65.tid] = newOff65;
-            if (ts65) ts65.offsetMin = newOff65;
-            at65.finMin = _finMinGantt(at65, ts65, newOff65, prevRet65p2 || ts65.entrepot);
-          } else {
-            // Impossible à décaler → éviction
-            evicted65.push({ at: at65, origOff: at65.offsetMin });
-            at65.modId = null;
-            for (var mi65 = 0; mi65 < AppState.modules.length; mi65++) {
-              var idx65 = AppState.modules[mi65].tours.indexOf(at65.tid);
-              if (idx65 >= 0) { AppState.modules[mi65].tours.splice(idx65, 1); break; }
-            }
-            delete AppState.modulesOffsets[modId65 + '_' + at65.tid];
-            seq.splice(si, 1); si--;
-            continue;
-          }
-        }
-      }
-      prevRet65p2 = ts65 ? (ts65.retour || ts65.entrepot) : null;
+  groupe.flux.forEach(function(f) {
+    if (!magasinsVus[f.magasin]) {
+      magasinsVus[f.magasin] = true;
+      magasinsDistincts.push(f.magasin);
     }
   });
 
-  // Placer les évincés dans de nouveaux modules solo
-  evicted65.forEach(function(ev) {
-    var at65 = ev.at, ts65 = tourStates[at65.tid];
-    at65.effectiveOffset = ev.origOff;
-    if (ts65) ts65.offsetMin = ev.origOff;
-    var nums65 = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g,''))||0; });
-    var nxt65 = (nums65.length ? Math.max.apply(null, nums65) : 0) + 1;
-    var newModId65 = 'M' + nxt65;
-    AppState.modules.push({ id: newModId65, tours: [at65.tid] });
-    _afOpt_autoCreatedModIds.push(newModId65);
-    AppState.modulesOffsets[newModId65 + '_' + at65.tid] = at65.effectiveOffset;
-    at65.modId = newModId65;
-    if (ts65) at65.finMin = _finMinGantt(at65, ts65, at65.effectiveOffset, ts65.entrepot);
-  });
-
-  // ── 6.75. Détection finale des livraisons simultanées après correction step 6.5 ──
-  // Step 6.5 peut avoir décalé des tournées, invalidant les storeSlots enregistrés en step 6.
-  // On recalcule les créneaux de livraison réels depuis les offsets finaux, on trie par heure
-  // de départ (priorité aux tournées les plus matinales) et on sépare les conflictuels.
-  var finalSlots675 = {}; // {magasin: [{start, end}]}
-  var sorted675 = allTours.slice().sort(function(a, b) { return a.effectiveOffset - b.effectiveOffset; });
-  var conflict675 = [];
-
-  sorted675.forEach(function(at) {
-    if (!at.modId) return;
-    var ts675 = tourStates[at.tid];
-    if (!ts675 || !ts675.flux || ts675.flux.length === 0) return;
-    var adj675 = { offsetMin: at.effectiveOffset,
-                   admDur: ts675.admDur !== undefined ? ts675.admDur : 15,
-                   chgtDur: ts675.chgtDur || 30,
-                   entrepot: ts675.entrepot, retour: ts675.retour || ts675.entrepot,
-                   capacite: ts675.capacite || 33 };
-    var sim675 = _afOpt_simulerRoute(adj675, ts675.flux, dm, jour);
-    var dts675 = (sim675 && sim675.valid) ? sim675.deliveryTimes : [];
-
-    var hasC = false;
-    for (var di = 0; di < dts675.length && !hasC; di++) {
-      var dt = dts675[di];
-      var sl = finalSlots675[dt.magasin];
-      if (sl) {
-        for (var sli = 0; sli < sl.length; sli++) {
-          if (dt.start < sl[sli].end && dt.end > sl[sli].start) { hasC = true; break; }
-        }
-      }
-    }
-
-    if (hasC) {
-      conflict675.push(at);
-    } else {
-      dts675.forEach(function(dt) {
-        if (!finalSlots675[dt.magasin]) finalSlots675[dt.magasin] = [];
-        finalSlots675[dt.magasin].push({ start: dt.start, end: dt.end });
+  function buildArrets(permMagasins) {
+    return permMagasins.map(function(mag) {
+      var utTotal = 0, marc = '';
+      groupe.flux.forEach(function(f) {
+        if (f.magasin === mag) { utTotal += f.utAffecte; marc = f.marchandise; }
       });
+      return {
+        magasin:     mag,
+        marchandise: marc,
+        ut:          utTotal,
+        utAffecte:   utTotal,
+        entrepot:    groupe.entrepot
+      };
+    });
+  }
+
+  var perms = _afOpt_permutations(magasinsDistincts);
+  var best  = null;
+  var gamma = 1;
+  var delta = 0.5;
+
+  perms.forEach(function(perm) {
+    var arrets    = buildArrets(perm);
+    var intervals = _afOpt_computeValidIntervals(
+      groupe.entrepot, arrets, dm, jour, 30, 15
+    );
+    if (!intervals.length) return;
+
+    var sim = _afOpt_simulerGroupe(groupe.entrepot, arrets, dm, jour);
+    if (!sim.valid) return;
+
+    var longueurUnion = intervals.reduce(function(s, iv) {
+      return s + (iv.fin - iv.debut);
+    }, 0);
+    var score = sim.dureeRoute * gamma - longueurUnion * delta;
+
+    if (!best || score < best.score) {
+      best = {
+        permutation:   perm,
+        arrets:        arrets,
+        intervals:     intervals,
+        duree:         sim.dureeRoute,
+        score:         score,
+        deliveryTimes: sim.deliveryTimes
+      };
     }
   });
 
-  // Séparer chaque tournée conflictuelle dans son propre module (à son offset d'origine)
-  conflict675.forEach(function(at) {
-    var ts675 = tourStates[at.tid];
-    var oldMod675 = at.modId;
-    // Retirer du module courant
-    for (var mi675 = 0; mi675 < AppState.modules.length; mi675++) {
-      var idx675 = AppState.modules[mi675].tours.indexOf(at.tid);
-      if (idx675 >= 0) { AppState.modules[mi675].tours.splice(idx675, 1); break; }
-    }
-    delete AppState.modulesOffsets[oldMod675 + '_' + at.tid];
-    // Nouveau module à l'offset d'origine (validé lors de la construction Phase 1)
-    var nums675 = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g,''))||0; });
-    var nxt675 = (nums675.length ? Math.max.apply(null, nums675) : 0) + 1;
-    var newMod675 = 'M' + nxt675;
-    AppState.modules.push({ id: newMod675, tours: [at.tid] });
-    _afOpt_autoCreatedModIds.push(newMod675);
-    AppState.modulesOffsets[newMod675 + '_' + at.tid] = at.effectiveOffset;
-    at.modId = newMod675;
+  return best;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PHASE 1.5 — Tri des groupes (score α/β)
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_trierGroupes(groupesValides) {
+  var alpha = 1;
+  var beta  = 0.5;
+
+  groupesValides.forEach(function(g) {
+    var premiereHeure = g.best.intervals[0].debut;
+    g._score4 = g.best.duree * alpha - premiereHeure * beta;
   });
 
-  // ── 7. Supprimer les modules auto-créés restants vides + modules user vides non utilisés ──
-  AppState.modules = AppState.modules.filter(function(m) {
-    if (_afOpt_autoCreatedModIds.indexOf(m.id) >= 0 && m.tours.length === 0) return false;
+  return groupesValides.slice().sort(function(a, b) {
+    return b._score4 - a._score4;
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PHASE 1.6 — Placement First Fit + anti-téléportation
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_filtrerIntervals(intervals, deliveryTimes) {
+  return intervals.filter(function(iv) {
+    var t = iv.debut;
+    for (var i = 0; i < deliveryTimes.length; i++) {
+      var dt   = deliveryTimes[i];
+      var deb  = t + 45 + dt.debutRel;
+      var fin  = deb + dt.svc;
+      var slots = _afOpt_storeSlots[dt.magasin] || [];
+      for (var j = 0; j < slots.length; j++) {
+        if (deb < slots[j].end && fin > slots[j].start) return false;
+      }
+    }
     return true;
   });
-  _afOpt_autoCreatedModIds = _afOpt_autoCreatedModIds.filter(function(mid) {
-    return AppState.modules.some(function(m) { return m.id === mid; });
-  });
+}
 
-  // ── 8. Auto-split des shifts trop longs ──────────────────────────────────
-  var toursByMod = {};
-  allTours.forEach(function(at) {
-    if (!at.modId) return;
-    if (!toursByMod[at.modId]) toursByMod[at.modId] = [];
-    toursByMod[at.modId].push(at);
-  });
-
-  Object.keys(toursByMod).forEach(function(modId) {
-    var mTours = toursByMod[modId].sort(function(a, b) {
-      return a.effectiveOffset - b.effectiveOffset;
+function _afOpt_enregistrerSlots(tourEntry) {
+  tourEntry.deliveryTimes.forEach(function(dt) {
+    var deb = tourEntry.offsetMin + 45 + dt.debutRel;
+    var fin = deb + dt.svc;
+    if (!_afOpt_storeSlots[dt.magasin]) _afOpt_storeSlots[dt.magasin] = [];
+    _afOpt_storeSlots[dt.magasin].push({
+      start: deb, end: fin, tid: tourEntry.tid
     });
-    if (mTours.length < 2) return;
+  });
+}
 
-    var firstOffset = mTours[0].effectiveOffset;
-    var isNuit = firstOffset >= 22 * 60 || firstOffset < 6 * 60;
-    var maxSh = isNuit ? MAX_SHIFT_NUIT : MAX_SHIFT_JOUR;
+function _afOpt_placerGroupe(groupe, best, dm, jour) {
+  var SETUP = 45; // chgt(30) + adm(15)
 
-    var segStart = firstOffset;
-    var splitsAdded = 0;
-    for (var si = 1; si < mTours.length; si++) {
-      var shiftDur = mTours[si].finMin - segStart;
-      console.log('[Step8] mod=' + modId + ' tour=' + mTours[si].tid + ' shiftDur=' + Math.round(shiftDur) + 'min maxSh=' + maxSh);
-      if (shiftDur > maxSh) {
-        if (!AppState.shiftSplits[modId]) AppState.shiftSplits[modId] = [];
-        var prevTid = mTours[si - 1].tid;
-        if (AppState.shiftSplits[modId].indexOf(prevTid) < 0)
-          AppState.shiftSplits[modId].push(prevTid);
-        segStart = mTours[si].effectiveOffset;
-        splitsAdded++;
+  var intervals = _afOpt_filtrerIntervals(best.intervals, best.deliveryTimes);
+  if (!intervals.length) return { placed: false, reason: 'creneaux_satures' };
+
+  // ── Tenter chaque module existant ─────────────────────────────
+  for (var mi = 0; mi < _afOpt_modulesInternes.length; mi++) {
+    var mod    = _afOpt_modulesInternes[mi];
+    var sorted = mod.tours.slice().sort(function(a, b) {
+      return a.offsetMin - b.offsetMin;
+    });
+
+    var positions = [];
+    positions.push({ prevTour: null, nextTour: sorted[0] || null });
+    for (var ti = 0; ti < sorted.length - 1; ti++) {
+      positions.push({ prevTour: sorted[ti], nextTour: sorted[ti + 1] });
+    }
+    if (sorted.length > 0) {
+      positions.push({ prevTour: sorted[sorted.length - 1], nextTour: null });
+    }
+
+    for (var pi = 0; pi < positions.length; pi++) {
+      var pos      = positions[pi];
+      var prevTour = pos.prevTour;
+      var nextTour = pos.nextTour;
+
+      var tMin = intervals[0].debut;
+      var tMax = intervals[intervals.length - 1].fin;
+
+      if (prevTour) {
+        var dPrevEntr = _afOpt_getDist(dm,
+          prevTour.arrets[prevTour.arrets.length - 1].magasin,
+          groupe.entrepot
+        );
+        tMin = Math.max(tMin,
+          prevTour.finMin
+          - (prevTour._retourDuree || 0)
+          + (dPrevEntr ? dPrevEntr.m : 0)
+        );
       }
-    }
-    if (splitsAdded > 0) console.log('[Step8] ' + splitsAdded + ' coupure(s) insérée(s) dans ' + modId);
-  });
 
-  // ── Diagnostic ──
-  var totalBins = bins.length;
-  var totalSplits = Object.keys(AppState.shiftSplits).reduce(function(s, k) { return s + AppState.shiftSplits[k].length; }, 0);
-  console.log('[Consolidation] ' + allTours.length + ' tournées → ' + totalBins + ' modules | ' + totalSplits + ' coupure(s) shift auto');
-  afficherToast('🔍 Consolidation : ' + allTours.length + ' tours → ' + totalBins + ' modules', 'information', 8000);
-}
+      if (nextTour) {
+        var dCandNext = _afOpt_getDist(dm,
+          best.arrets[best.arrets.length - 1].magasin,
+          nextTour.arrets[0].magasin
+        );
+        tMax = Math.min(tMax,
+          nextTour.offsetMin - SETUP - best.duree - (dCandNext ? dCandNext.m : 0)
+        );
+      }
 
-function _afOpt_supprimerTourVidesSilencieux(tourStates) {
-  // Supprimer les tournées auto-créées vides (sans flux) de AppState et de tourStates
-  _afOpt_autoCreatedTids = _afOpt_autoCreatedTids.filter(function(tid) {
-    if (!tourStates[tid] || tourStates[tid].flux.length > 0) return true; // garder
-    // Supprimer de tous les modules
-    var allMods = [AppState.moduleM0].concat(AppState.modules);
-    allMods.forEach(function(m) {
-      var idx = m.tours.indexOf(tid);
-      if (idx >= 0) { m.tours.splice(idx, 1); delete AppState.modulesOffsets[m.id + '_' + tid]; }
-    });
-    AppState.tourneesLocales = (AppState.tourneesLocales || []).filter(function(t) { return String(t[0]) !== tid; });
-    delete AppState.planLocal[tid];
-    if (AppState.tourneeOverrides) delete AppState.tourneeOverrides[tid];
-    if (AppState.tourneeRemorque)  delete AppState.tourneeRemorque[tid];
-    delete tourStates[tid];
-    return false; // retirer de _afOpt_autoCreatedTids
-  });
-  // Supprimer les modules auto-créés devenus vides
-  AppState.modules = AppState.modules.filter(function(m) {
-    return _afOpt_autoCreatedModIds.indexOf(m.id) < 0 || m.tours.length > 0;
-  });
-  _afOpt_autoCreatedModIds = _afOpt_autoCreatedModIds.filter(function(mid) {
-    return AppState.modules.some(function(m) { return m.id === mid; });
-  });
-}
+      if (tMax <= tMin) continue;
 
-function _afOpt_appliquerPlan(tourStates) {
-  if (!AppState.tourneeOverrides) AppState.tourneeOverrides = {};
-  Object.keys(tourStates).forEach(function(tid) {
-    var ts = tourStates[tid];
-    AppState.planLocal[tid] = ts.flux.slice();
-    // Persister les paramètres mutés pendant l'optimisation (retour cross-entrepôt, admDur=0 pour tours chaînés)
-    if (!AppState.tourneeOverrides[tid]) AppState.tourneeOverrides[tid] = {};
-    var ov = AppState.tourneeOverrides[tid];
-    // Ne persister retour que s'il est cross-entrepôt (sinon il correspond au défaut t[2] et écraserait à tort)
-    if (ts.retour !== undefined && ts.retour !== ts.entrepot) ov.retour = ts.retour;
-    else if (ov.retour !== undefined && ov.retour === ts.entrepot) delete ov.retour; // nettoyer une ancienne override devenue inutile
-    if (ts.admDur   !== undefined) ov.admDur   = ts.admDur;
-    if (ts.chgtDur  !== undefined) ov.chgtDur  = ts.chgtDur;
-    if (ts.capacite !== undefined) ov.capacite = ts.capacite;
-  });
-}
+      var ivFiltrees = intervals
+        .filter(function(iv) { return iv.fin > tMin && iv.debut < tMax; })
+        .map(function(iv) {
+          return {
+            debut: Math.max(iv.debut, tMin),
+            fin:   Math.min(iv.fin,   tMax)
+          };
+        })
+        .filter(function(iv) { return iv.fin > iv.debut; });
 
-// ── Découpage des tours longs en deux sous-tours chaînés ──────────────────────
-// Pour chaque tour ayant ≥ 2 flux, on tente de le couper en deux :
-//   Tour A  : flux[0..k-1], démarre à l'offset original
-//   Tour B  : flux[k..N-1], démarre quand Tour A finit (offsetFixed = true)
-// La consolidation chaîne ensuite Tour A et Tour B dans le MÊME module via Case A
-// (bin.lastEndMin ≤ at.offsetMin est vérifié exactement puisque les deux valeurs coïncident).
-function _afOpt_splitLongTours(tourStates, dm, jour) {
-  var MIN_FLUX  = 3;        // au moins 3 flux : Tour A ≥ 1 stop, Tour B ≥ 2 stops (ou vice-versa)
-  var MIN_DUR   = 4 * 60;   // ne tenter le split que si le tour dure ≥ 4h (évite de couper les courts)
+      if (!ivFiltrees.length) continue;
 
-  // Snapshot des TIDs existants avant d'en créer de nouveaux
-  var tidsInitiaux = Object.keys(tourStates);
+      var offsetMin = ivFiltrees[0].debut;
+      var finMin    = offsetMin + SETUP + best.duree;
 
-  tidsInitiaux.forEach(function(tid) {
-    var ts = tourStates[tid];
-    if (!ts || !ts.flux || ts.flux.length < MIN_FLUX) return;
-    if (ts.offsetFixed) return; // tour déjà issu d'un split, ne pas re-découper
+      // Vérification finale storeSlots
+      var ivCheck = _afOpt_filtrerIntervals(
+        [{ debut: offsetMin, fin: offsetMin + 1 }], best.deliveryTimes
+      );
+      if (!ivCheck.length) continue;
 
-    // Simulation complète pour obtenir la durée réelle
-    var simFull = _afOpt_simulerRoute(ts, ts.flux, dm, jour);
-    if (!simFull || !simFull.valid) return;
+      // ✅ Placement retenu dans module existant
+      var tid  = _afOpt_genTid();
+      var marc = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
+      if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
+      AppState.tourneesLocales.push([
+        tid, 33, groupe.entrepot, 15, 30, 'Non', marc, jour
+      ]);
+      AppState.planLocal[tid] = groupe.flux.map(function(f) {
+        return Object.assign({}, f);
+      });
+      _afOpt_autoCreatedTids.push(tid);
 
-    var finFull = simFull.finMinReel || simFull.finMin;
-    if (finFull - ts.offsetMin < MIN_DUR) return; // trop court, pas besoin de couper
+      // Ajouter au module AppState
+      var modAppState = AppState.modules.filter(function(m) {
+        return m.id === mod.modId;
+      })[0];
+      if (modAppState) modAppState.tours.push(tid);
+      AppState.modulesOffsets[mod.modId + '_' + tid] = offsetMin;
 
-    var N = ts.flux.length;
-    var maxSh = (ts.offsetMin >= 22 * 60 || ts.offsetMin < 6 * 60) ? 600 : 660;
+      var dRet = best.arrets.length
+        ? _afOpt_getDist(dm,
+            best.arrets[best.arrets.length - 1].magasin,
+            groupe.entrepot)
+        : null;
 
-    // Tenter le découpage du milieu vers le début (on veut le split le plus équilibré)
-    for (var k = Math.floor(N / 2); k >= 1; k--) {
-      var fluxA = ts.flux.slice(0, k);
-      var fluxB = ts.flux.slice(k);
-
-      // Simuler Tour A (mêmes paramètres que le tour original)
-      var simA = _afOpt_simulerRoute(ts, fluxA, dm, jour);
-      if (!simA || !simA.valid) continue;
-
-      var finA = simA.finMinReel || simA.finMin;
-      if (finA - ts.offsetMin > maxSh) continue; // Tour A seul dépasse déjà la limite
-
-      // Simuler Tour B depuis la fin de Tour A (rechargement immédiat, sans admin départ)
-      var tsB = {
-        offsetMin: finA,
-        admDur:    0,
-        chgtDur:   ts.chgtDur || 30,
-        entrepot:  ts.entrepot,
-        retour:    ts.retour || ts.entrepot,
-        capacite:  ts.capacite || 33
+      var tourEntry = {
+        tid:           tid,
+        offsetMin:     offsetMin,
+        finMin:        finMin,
+        entrepot:      groupe.entrepot,
+        retour:        groupe.entrepot,
+        arrets:        best.arrets,
+        deliveryTimes: best.deliveryTimes,
+        _retourDuree:  dRet ? dRet.m : 0
       };
-      var simB = _afOpt_simulerRoute(tsB, fluxB, dm, jour);
-      if (!simB || !simB.valid) continue;
+      mod.tours.push(tourEntry);
 
-      var finB = simB.finMinReel || simB.finMin;
-      // Shift total du chauffeur (Tour A + Tour B dans le même module)
-      if (finB - ts.offsetMin > maxSh) continue;
+      // Mettre à jour le retour de T_prev (anti-téléportation)
+      if (prevTour) {
+        prevTour.retour = groupe.entrepot;
+        var dPrevRet = _afOpt_getDist(dm,
+          prevTour.arrets[prevTour.arrets.length - 1].magasin,
+          groupe.entrepot
+        );
+        prevTour._retourDuree = dPrevRet ? dPrevRet.m : 0;
+        prevTour.finMin = prevTour.offsetMin + SETUP
+          + (prevTour.deliveryTimes.length
+              ? prevTour.deliveryTimes[prevTour.deliveryTimes.length - 1].finRel
+              : 0)
+          + prevTour._retourDuree;
+        if (!AppState.tourneeOverrides) AppState.tourneeOverrides = {};
+        if (!AppState.tourneeOverrides[prevTour.tid]) AppState.tourneeOverrides[prevTour.tid] = {};
+        AppState.tourneeOverrides[prevTour.tid].retour = groupe.entrepot;
+      }
 
-      // Split valide — créer Tour B dans AppState
-      // admDurOvr=0 : Tour B enchaîne directement après Tour A, sans admin de départ.
-      // Le gantt utilisera admDur=0 (stocké dans tourneesLocales[3]) → cohérent avec la sim.
-      var marcB = (fluxB[0] && fluxB[0].marchandise) || ts.marchandise || 'PGC';
-      var newTid = _afOpt_creerTournee(ts.entrepot, finA, finB, marcB, jour, 0);
-      if (!newTid) continue; // création impossible (erreur interne)
-
-      tourStates[newTid] = {
-        tid:         newTid,
-        capacite:    ts.capacite  || 33,
-        entrepot:    ts.entrepot,
-        retour:      ts.retour    || ts.entrepot,
-        admDur:      0,   // pas d'admin départ pour un tour chaîné
-        chgtDur:     ts.chgtDur   || 30,
-        offsetMin:   finA,
-        finMin:      simB.finMin,
-        flux:        fluxB,
-        cout:        _afOpt_calculerCout(tsB, simB),
-        autoCreated: true,
-        offsetFixed: true  // imposé par finA → la consolidation ne recalcule PAS cet offset
-      };
-
-      // Réduire Tour A à la première moitié
-      ts.flux = fluxA;
-      break; // premier split valide trouvé, on s'arrête
+      _afOpt_enregistrerSlots(tourEntry);
+      return { placed: true, tid: tid, modId: mod.modId, offsetMin: offsetMin };
     }
-  });
-}
-
-function _afOpt_finalizeAndRender(tourStates, skipDist, skipCarto, unplanned, cancelled, dm, jour) {
-  _afOpt_supprimerTourVidesSilencieux(tourStates);
-  if (dm && jour) {
-    _afOpt_consolidateModules(tourStates, dm, jour);
   }
-  _afOpt_appliquerPlan(tourStates);
+
+  // ── Créer un nouveau module ────────────────────────────────────
+  var offsetMin2 = intervals[0].debut;
+  var finMin2    = offsetMin2 + SETUP + best.duree;
+  var tid2       = _afOpt_genTid();
+  var marc2      = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
+
+  if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
+  AppState.tourneesLocales.push([tid2, 33, groupe.entrepot, 15, 30, 'Non', marc2, jour]);
+  AppState.planLocal[tid2] = groupe.flux.map(function(f) { return Object.assign({}, f); });
+  _afOpt_autoCreatedTids.push(tid2);
+
+  var nums = AppState.modules.map(function(m) {
+    return parseInt(m.id.replace(/\D/g, '')) || 0;
+  });
+  var nxt      = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
+  var newModId = 'M' + nxt;
+  AppState.modules.push({ id: newModId, tours: [tid2] });
+  _afOpt_autoCreatedModIds.push(newModId);
+  AppState.modulesOffsets[newModId + '_' + tid2] = offsetMin2;
+
+  var dRet2 = best.arrets.length
+    ? _afOpt_getDist(dm, best.arrets[best.arrets.length - 1].magasin, groupe.entrepot)
+    : null;
+
+  var tourEntry2 = {
+    tid:           tid2,
+    offsetMin:     offsetMin2,
+    finMin:        finMin2,
+    entrepot:      groupe.entrepot,
+    retour:        groupe.entrepot,
+    arrets:        best.arrets,
+    deliveryTimes: best.deliveryTimes,
+    _retourDuree:  dRet2 ? dRet2.m : 0
+  };
+
+  _afOpt_modulesInternes.push({ modId: newModId, tours: [tourEntry2] });
+  _afOpt_enregistrerSlots(tourEntry2);
+
+  return { placed: true, tid: tid2, modId: newModId, offsetMin: offsetMin2 };
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PHASE 2 — LNS (Large Neighbourhood Search)
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_deepCopyStates(states) {
+  return states.map(function(s) {
+    return {
+      tid:       s.tid,
+      modId:     s.modId,
+      entrepot:  s.entrepot,
+      retour:    s.retour,
+      flux:      s.flux.map(function(f) { return Object.assign({}, f); }),
+      offsetMin: s.offsetMin,
+      chgtDur:   s.chgtDur,
+      admDur:    s.admDur
+    };
+  });
+}
+
+function _afOpt_calculerCout(ts, dm, jour) {
+  if (!ts || !ts.flux || !ts.flux.length) return 0;
+  var arrets = ts.flux.map(function(f) {
+    return {
+      magasin:     f.magasin,
+      marchandise: f.marchandise,
+      ut:          f.utAffecte || f.ut,
+      utAffecte:   f.utAffecte || f.ut,
+      entrepot:    ts.entrepot
+    };
+  });
+  var sim = _afOpt_simulerGroupe(ts.entrepot, arrets, dm, jour);
+  return sim.valid ? sim.dureeRoute : Infinity;
+}
+
+function _afOpt_totalCout(tourStates, dm, jour) {
+  return tourStates.reduce(function(sum, ts) {
+    return sum + _afOpt_calculerCout(ts, dm, jour);
+  }, 0);
+}
+
+function _afOpt_phase2LNS(tourStates, dm, jour, startCout, onProgress, onDone) {
+  var MAX_ITER    = 500;
+  var DESTROY_PCT = 0.3;
+  var best        = _afOpt_deepCopyStates(tourStates);
+  var bestCout    = startCout;
+  var current     = _afOpt_deepCopyStates(tourStates);
+  var iter        = 0;
+  var noImprove   = 0;
+  var MAX_NO_IMP  = 100;
+
+  function runIter() {
+    if (_afOpt_cancelled || iter >= MAX_ITER || noImprove >= MAX_NO_IMP) {
+      onDone(_afOpt_deepCopyStates(best), _afOpt_cancelled);
+      return;
+    }
+
+    onProgress(iter / MAX_ITER);
+
+    // ── Destroy : retirer aléatoirement DESTROY_PCT des flux ──
+    var candidate  = _afOpt_deepCopyStates(current);
+    var allFlux    = [];
+    candidate.forEach(function(ts, tsi) {
+      ts.flux.forEach(function(f, fi) {
+        allFlux.push({ tsi: tsi, fi: fi, flux: f });
+      });
+    });
+
+    var nDestroy = Math.max(1, Math.floor(allFlux.length * DESTROY_PCT));
+    var removed  = [];
+    for (var d = 0; d < nDestroy; d++) {
+      if (!allFlux.length) break;
+      var ri   = Math.floor(Math.random() * allFlux.length);
+      var item = allFlux.splice(ri, 1)[0];
+      removed.push(item.flux);
+      candidate[item.tsi].flux.splice(
+        candidate[item.tsi].flux.indexOf(item.flux), 1
+      );
+    }
+
+    // Supprimer les tournées vides
+    candidate = candidate.filter(function(ts) { return ts.flux.length > 0; });
+
+    // ── Repair : réinsérer les flux retirés (best position) ──
+    removed.forEach(function(f) {
+      var bestPos   = null;
+      var bestDelta = Infinity;
+
+      for (var ti = 0; ti < candidate.length; ti++) {
+        var ts = candidate[ti];
+        if (_afOpt_getFamille(f.marchandise) !== _afOpt_getFamille(
+          ts.flux[0] ? ts.flux[0].marchandise : f.marchandise
+        )) continue;
+
+        var utTotal = ts.flux.reduce(function(s, x) {
+          return s + (x.utAffecte || x.ut);
+        }, 0);
+        if (utTotal + (f.utAffecte || f.ut) > 33.01) continue;
+
+        for (var pos = 0; pos <= ts.flux.length; pos++) {
+          var testFlux = ts.flux.slice(0, pos).concat([f]).concat(ts.flux.slice(pos));
+          var testArrets = testFlux.map(function(x) {
+            return {
+              magasin:     x.magasin,
+              marchandise: x.marchandise,
+              ut:          x.utAffecte || x.ut,
+              utAffecte:   x.utAffecte || x.ut,
+              entrepot:    ts.entrepot
+            };
+          });
+          var intervals = _afOpt_computeValidIntervals(
+            ts.entrepot, testArrets, dm, jour, ts.chgtDur, ts.admDur
+          );
+          if (!intervals.length) continue;
+
+          var sim = _afOpt_simulerGroupe(ts.entrepot, testArrets, dm, jour);
+          if (!sim.valid) continue;
+
+          var delta = sim.dureeRoute - _afOpt_calculerCout(ts, dm, jour);
+          if (delta < bestDelta) {
+            bestDelta = delta;
+            bestPos   = { ti: ti, pos: pos };
+          }
+        }
+      }
+
+      if (bestPos) {
+        candidate[bestPos.ti].flux.splice(bestPos.pos, 0, f);
+      } else {
+        // Nouvelle tournée pour ce flux non réinsérable
+        var newTs = {
+          tid:       _afOpt_genTid(),
+          modId:     null,
+          entrepot:  f.entrepot || 'ENTREPOT',
+          retour:    f.entrepot || 'ENTREPOT',
+          flux:      [f],
+          offsetMin: 6 * 60,
+          chgtDur:   30,
+          admDur:    15
+        };
+        candidate.push(newTs);
+      }
+    });
+
+    // ── Évaluation ────────────────────────────────────────────
+    var candidateCout = _afOpt_totalCout(candidate, dm, jour);
+    if (candidateCout < bestCout) {
+      best      = _afOpt_deepCopyStates(candidate);
+      bestCout  = candidateCout;
+      current   = candidate;
+      noImprove = 0;
+    } else {
+      // Acceptation probabiliste (simulated annealing légère)
+      var T = Math.max(0.1, 10 * (1 - iter / MAX_ITER));
+      if (Math.random() < Math.exp(-(candidateCout - bestCout) / T)) {
+        current = candidate;
+      }
+      noImprove++;
+    }
+
+    iter++;
+    setTimeout(runIter, 0);
+  }
+
+  runIter();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PHASE 3 — Navettes
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_resolveNavettes(unplanned, finalStates, dm, jour) {
+  if (!unplanned || !unplanned.length) return;
+  // Déléguer à la fonction existante si disponible
+  if (typeof _afOpt_resolveNavettesImpl === 'function') {
+    _afOpt_resolveNavettesImpl(unplanned, finalStates, dm, jour);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// FINALISATION
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_finalizeAndRender(finalStates, dm, jour, nonPlaces, cancelled) {
+  // Appliquer les états finaux dans AppState
+  finalStates.forEach(function(ts) {
+    if (!ts.tid) return;
+    AppState.planLocal[ts.tid] = ts.flux.map(function(f) {
+      return Object.assign({}, f);
+    });
+    if (ts.modId && ts.offsetMin !== undefined) {
+      AppState.modulesOffsets[ts.modId + '_' + ts.tid] = ts.offsetMin;
+    }
+    if (ts.retour && ts.retour !== ts.entrepot) {
+      if (!AppState.tourneeOverrides) AppState.tourneeOverrides = {};
+      if (!AppState.tourneeOverrides[ts.tid]) AppState.tourneeOverrides[ts.tid] = {};
+      AppState.tourneeOverrides[ts.tid].retour = ts.retour;
+    }
+  });
+
   _afOpt_hideOverlay();
+
+  var msg = cancelled
+    ? '⚠️ Optimisation annulée — résultat partiel'
+    : '✅ Optimisation terminée';
+
+  if (nonPlaces && nonPlaces.length) {
+    msg += ' — ' + nonPlaces.length + ' groupe(s) non placé(s)';
+  }
+
+  if (typeof afficherToast === 'function') afficherToast(msg, cancelled ? 'avertissement' : 'succes');
   if (AppState.donnees) {
     rendrePlanningFlux(AppState.donnees);
     rendreGantt(AppState.donnees);
     if (AppState.vueActive === 'remorques') rendreGanttRemorques(AppState.donnees);
     if (AppState.vueActive === 'magasins')  rendreGanttMagasins(AppState.donnees);
   }
-  var total = 0, tours = 0;
-  Object.keys(tourStates).forEach(function(tid) {
-    if (tourStates[tid].flux.length > 0) { total += tourStates[tid].flux.length; tours++; }
-  });
-  var autoN = _afOpt_autoCreatedTids.length;
-  var msg = (cancelled ? '⚡ Partiel (annulé P1) — ' : '🧠 Optimisé — ');
-  msg += total + ' flux planifiés (' + tours + ' tournées';
-  if (autoN > 0) msg += ', dont ' + autoN + ' créées auto';
-  msg += ')';
-  var sev = 'succes';
-  if (skipDist.length)  { msg += ' | ⚠️ ' + skipDist.length + ' ignorés (distance manquante)';    sev = 'avertissement'; }
-  if (skipCarto.length) { msg += ' | ⚠️ ' + skipCarto.length + ' ignorés (cartographie absente)'; sev = 'avertissement'; }
-  if (unplanned.length) { msg += ' | ❌ ' + unplanned.length + ' non planifiables';                sev = 'avertissement'; }
-  afficherToast(msg, sev);
-  try { rafraichirKPI(); } catch(e) {}
+  rafraichirKPI();
 }
 
-// ── Point d'entrée ────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+// POINT D'ENTRÉE PRINCIPAL
+// ══════════════════════════════════════════════════════════════════
 
 function autoFillOptimise() {
-  if (!AppState.donnees) { afficherToast('Chargez d\'abord le fichier Excel', 'avertissement'); return; }
-  var data = AppState.donnees;
-  var jour = AppState.jourActif;
-  _afOpt_cancelled = false;
-  _afOpt_startTime = Date.now();
+
+  // ── Pré-requis ───────────────────────────────────────────────
+  if (!AppState.donnees) {
+    afficherToast('Chargez d\'abord le fichier Excel', 'avertissement');
+    return;
+  }
+  if (!AppState.distancierParsed || !AppState.distancierParsed.length) {
+  afficherToast('⚠️ Distancier non chargé', 'avertissement');
+  return;
+  }
+  if (!AppState.cartographiePlages || !Object.keys(AppState.cartographiePlages).length) {
+    afficherToast('⚠️ Cartographie non chargée', 'avertissement');
+    return;
+  }
+
+  _afOpt_cancelled    = false;
+  _afOpt_startTime    = Date.now();
   _afOpt_navetteCount = 0;
+  // Afficher l'overlay
+  var ov = document.getElementById('af-overlay');
+  if (ov) ov.style.display = 'flex';
+
   _afOpt_updateProgress(0.01, 'Initialisation…');
 
   setTimeout(function() {
-    _afOpt_cleanupPreviousRun();
-    _afOpt_storeSlots = {};
-    AppState.planLocal = {};
-    AppState.shiftSplits = {};  // reset des coupures de shift — step 8 les recalcule
-    // Reset les admDur=0 injectés par le run précédent (tours chaînés) — valeur transitoire, pas persistante
-    Object.keys(AppState.tourneeOverrides || {}).forEach(function(tid) {
-      if (AppState.tourneeOverrides[tid]) delete AppState.tourneeOverrides[tid].admDur;
-    });
-    var dm = _afOpt_buildDistMap();
-    var fluxList = _afOpt_collectFlux(data, jour);
-    if (fluxList.length === 0) {
-      _afOpt_hideOverlay();
-      afficherToast('⚠️ Aucun flux à planifier pour ce jour et ces filtres', 'avertissement');
-      return;
-    }
-    fluxList.sort(function(a, b) { return _afOpt_difficulte(b, dm, jour) - _afOpt_difficulte(a, dm, jour); });
-    var tourStates = _afOpt_collectTourStates(jour);
-    _afOpt_updateProgress(0.03, 'Phase 1 — Construction heuristique…');
+    try {
 
-    _afOpt_phase1Chunked(fluxList, tourStates, dm, jour,
-      function(pct, lbl) { _afOpt_updateProgress(0.03 + pct * 0.47, lbl); },
-      function(p1) {
-        if (_afOpt_cancelled) { _afOpt_finalizeAndRender(p1.tourStates, p1.skippedDist, p1.skippedCarto, p1.unplanned, true, dm, jour); return; }
-        var p1Cout = _afOpt_totalCout(p1.tourStates);
-        _afOpt_updateProgress(0.50, 'Phase 2 — Optimisation LNS…');
-        _afOpt_phase2LNS(p1.tourStates, dm, jour, p1Cout,
-          function(pct2, lbl2) { _afOpt_updateProgress(0.50 + pct2 * 0.40, lbl2); },
-          function(bestStates) {
-            if (_afOpt_cancelled) { _afOpt_finalizeAndRender(p1.tourStates, p1.skippedDist, p1.skippedCarto, p1.unplanned, true, dm, jour); return; }
-            _afOpt_updateProgress(0.90, 'Phase 3 — Résolution navettes…');
-            var p3 = _afOpt_resolveNavettes(p1.unplanned, bestStates, dm, jour);
-            _afOpt_updateProgress(1.00, 'Finalisation…');
-            setTimeout(function() {
-              _afOpt_finalizeAndRender(bestStates, p1.skippedDist, p1.skippedCarto, p3.stillUnplanned, false, dm, jour);
-            }, 30);
+      // ── Phase 0 — Initialisation ────────────────────────────
+      _afOpt_cleanupPreviousRun();
+      _afOpt_storeSlots      = {};
+      _afOpt_modulesInternes = [];
+      AppState.planLocal     = AppState.planLocal || {};
+      AppState.shiftSplits   = {};
+
+      var dm   = _afOpt_buildDistMap();
+      var jour = AppState.jourActif;
+
+      if (!jour) {
+        _afOpt_hideOverlay();
+        afficherToast('⚠️ Aucun jour actif sélectionné', 'avertissement');
+        return;
+      }
+
+      var contextualSlots = _afOpt_phase0_extractContextualTournees(jour, dm);
+      _afOpt_phase0_initStoreSlots(contextualSlots);
+
+      var fluxList = _afOpt_collectFlux(AppState.donnees, jour);
+      if (!fluxList.length) {
+        _afOpt_hideOverlay();
+        afficherToast('⚠️ Aucun flux à planifier', 'avertissement');
+        return;
+      }
+
+      _afOpt_updateProgress(0.05, 'Phase 1 — FFD groupement…');
+
+      // ── Phase 1.1 + 1.2 — FFD + fractionnement ─────────────
+      var groupes = _afOpt_phase1_ffd(fluxList);
+      groupes     = _afOpt_phase1_fractionner(groupes, fluxList);
+
+      _afOpt_updateProgress(0.10, 'Phase 1 — Permutations et intervalles…');
+
+      // ── Phase 1.3 + 1.4 — Permutations ─────────────────────
+      var groupesValides   = [];
+      var groupesInvalides = [];
+      var TIMEOUT_MS       = 5 * 60 * 1000;
+
+      for (var gi = 0; gi < groupes.length; gi++) {
+        if (_afOpt_cancelled) break;
+        if (Date.now() - _afOpt_startTime > TIMEOUT_MS) {
+          for (var ri = gi; ri < groupes.length; ri++) {
+            groupesInvalides.push({ groupe: groupes[ri], reason: 'timeout' });
           }
+          break;
+        }
+
+        var g    = groupes[gi];
+        var best = _afOpt_findBestPermutation(g, dm, jour);
+        if (best) {
+          g.best = best;
+          groupesValides.push(g);
+        } else {
+          groupesInvalides.push({ groupe: g, reason: 'permutation_invalide' });
+        }
+
+        _afOpt_updateProgress(
+          0.10 + 0.20 * ((gi + 1) / groupes.length),
+          'Phase 1 — Groupe ' + (gi + 1) + '/' + groupes.length
         );
       }
-    );
+
+      // ── Phase 1.5 — Tri des groupes ─────────────────────────
+      var groupesTries = _afOpt_trierGroupes(groupesValides);
+
+      _afOpt_updateProgress(0.30, 'Phase 1 — Placement dans les modules…');
+
+      var groupesNonPlaces = groupesInvalides.slice();
+      var unplanned        = [];
+
+      // ── Phase 1.6 — Placement itératif (chunked) ────────────
+      function placerChunk(idx) {
+        if (_afOpt_cancelled || idx >= groupesTries.length) {
+
+          // ── Construire tourStates pour le LNS ───────────────
+          var tourStates = _afOpt_autoCreatedTids.map(function(tid) {
+            var flux    = AppState.planLocal[tid] || [];
+            var modId   = null;
+            var offsetMin = 6 * 60;
+
+            AppState.modules.forEach(function(m) {
+              if (m.tours && m.tours.indexOf(tid) >= 0) {
+                modId = m.id;
+                var key = m.id + '_' + tid;
+                if (AppState.modulesOffsets[key] !== undefined) {
+                  offsetMin = AppState.modulesOffsets[key];
+                }
+              }
+            });
+
+            var tData = (AppState.tourneesLocales || []).filter(function(t) {
+              return String(t[0]) === tid;
+            })[0];
+
+            return {
+              tid:       tid,
+              modId:     modId,
+              entrepot:  tData ? tData[2] : 'ENTREPOT',
+              retour:    tData ? tData[2] : 'ENTREPOT',
+              flux:      flux,
+              offsetMin: offsetMin,
+              chgtDur:   tData ? parseFloat(tData[4]) || 30 : 30,
+              admDur:    tData ? parseFloat(tData[3]) || 15 : 15
+            };
+          });
+
+          if (!tourStates.length) {
+            _afOpt_hideOverlay();
+            afficherToast('⚠️ Aucune tournée construite', 'avertissement');
+            return;
+          }
+
+          var startCout = _afOpt_totalCout(tourStates, dm, jour);
+
+          _afOpt_updateProgress(0.50, 'Phase 2 — LNS en cours…');
+
+          // ── Phase 2 — LNS ───────────────────────────────────
+          _afOpt_phase2LNS(
+            tourStates, dm, jour, startCout,
+            function(pct) {
+              _afOpt_updateProgress(0.50 + pct * 0.40, 'Phase 2 — LNS itération…');
+            },
+            function(finalStates, wasCancelled) {
+
+              // ── Phase 3 — Navettes ───────────────────────────
+              _afOpt_updateProgress(0.90, 'Phase 3 — Résolution navettes…');
+              _afOpt_resolveNavettes(unplanned, finalStates, dm, jour);
+
+              // ── Finalisation ─────────────────────────────────
+              _afOpt_updateProgress(1.00, 'Finalisation…');
+              _afOpt_finalizeAndRender(
+                finalStates, dm, jour, groupesNonPlaces, wasCancelled
+              );
+            }
+          );
+          return;
+        }
+
+        // Placer le groupe courant
+        var g      = groupesTries[idx];
+        var result = _afOpt_placerGroupe(g, g.best, dm, jour);
+
+        if (!result.placed) {
+          groupesNonPlaces.push({ groupe: g, reason: result.reason });
+          unplanned = unplanned.concat(g.flux);
+        }
+
+        _afOpt_updateProgress(
+          0.30 + 0.20 * ((idx + 1) / groupesTries.length),
+          'Phase 1 — Placement ' + (idx + 1) + '/' + groupesTries.length
+        );
+
+        setTimeout(function() { placerChunk(idx + 1); }, 0);
+      }
+
+      placerChunk(0);
+
+    } catch (e) {
+      _afOpt_hideOverlay();
+      console.error('[autoFillOptimise] Erreur critique :', e);
+      afficherToast('❌ Erreur : ' + e.message, 'erreur');
+    }
+
   }, 30);
 }
+
+// ── Bouton annulation ────────────────────────────────────────────
+function autoFillOptimise_cancel() {
+  _afOpt_cancelled = true;
+  afficherToast('⏹ Annulation en cours…', 'avertissement');
+}
+
+
 
 // ══════════════════════════════════════════════════════
 //  DÉTAIL TOURNÉE — modal avec étapes + EMB + ↑↓
@@ -8610,11 +8382,8 @@ function rendreGanttMagasins(data) {
   if (!conteneur) return;
   conteneur.innerHTML = '';
 
-  // Déplace le scroll horizontal sur le div intérieur pour que le conteneur
-  // extérieur ne crée pas de zone de clip qui rognerait la dernière sous-ligne
   var elOuter = document.getElementById('gantt-magasins');
-  if (elOuter) { elOuter.style.overflowX = 'visible'; elOuter.style.overflowY = 'visible'; }
-  conteneur.style.overflowX = 'auto';
+  if (elOuter) { elOuter.style.overflowX = ''; elOuter.style.overflowY = ''; }
 
   var PPM = AppState.PPM;
   var jour     = AppState.jourActif;
@@ -9393,7 +9162,7 @@ document.addEventListener('DOMContentLoaded', function() {
     </div>
     <div id="af-pct" style="margin:6px 0;font-size:13px;color:#555;font-weight:600;">0%</div>
     <div id="af-eta" style="font-size:12px;color:#90A4AE;margin-bottom:16px;">Temps restant : calcul…</div>
-    <button onclick="_afOpt_cancel()" style="padding:7px 22px;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;font-size:13px;color:#555;">✕ Annuler</button>
+    <button onclick="autoFillOptimise_cancel()" style="padding:7px 22px;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;font-size:13px;color:#555;">✕ Annuler</button>
   </div>
 </div>
 </body>
