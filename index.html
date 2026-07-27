@@ -567,6 +567,12 @@
     }
     .navette-pill:hover .navette-del-btn { opacity: 1; }
     .navette-del-btn:hover { background: #C62828; }
+    .navette-merge-target {
+      outline: 2px dashed #00BCD4 !important;
+      background: rgba(0, 188, 212, 0.22) !important;
+      transform: scale(1.03);
+      transition: transform 0.1s;
+    }
     /* ── Tooltip gantt custom ── */
     #gantt-tooltip {
       position: fixed; z-index: 9999; pointer-events: none; display: none;
@@ -2488,6 +2494,7 @@ var AppState = {
   shiftSplits:         {},  // { modId: [tid_apres_lequel_couper, ...] }
   pauseOverrides:      {},  // { 'modId_tid': [{ at: minAbs, type: 'conduite'|'service' }] }
   _pauseDragState:     null, // drag d'un bloc pause_chauffeur
+  _dragNavetteSrc:     null, // navette en cours de glisser-déposer pour fusion {_navetteId, entrepot, magasin}
   navettesLibres:      [],  // navettes créées manuellement [{_navetteId, entrepot, magasin, ut, zoneEntrepot, isNavette, ?_navFluxId}]
   fluxNavettes:        [],  // registre navettisations [{_navFluxId, _navetteId, magasin, marchandise, entrepotOrigine, entrepotRelay, utNavette, jour}]
   fluxDerivesNavette:  []   // flux dérivés non encore placés [{_navFluxId, magasin, marchandise, ut, entrepot, entrepotOrigine, _isFluxNavettise, jour}]
@@ -3640,39 +3647,60 @@ function rendrePlanningFlux(data) {
         var row = document.createElement('div');
         row.className = 'pfp-navpair-row';
 
-        // Bloc navette (entrepôtOrigine → entrepôtRelay)
-        (function(navPayload, placed) {
-          var el = document.createElement('div');
-          el.className = 'pfp-navpair-item' + (placed ? ' placed' : '');
-          el.style.background = '#00ACC1';
-          el.textContent = (placed ? '✓ ' : '') + pair.entrepotOrigine + ' → ' + pair.entrepotRelay + ' · ' + pair.utNavette + ' UT';
-          el.title = (placed ? 'Navette planifiée' : 'Glisser vers une tournée') + '\n' + pair.entrepotOrigine + ' → ' + pair.entrepotRelay + '\n' + pair.utNavette + ' UT ' + pair.marchandise;
-          if (!placed) {
-            el.draggable = true;
-            el.addEventListener('dragstart', function(e) {
-              e.dataTransfer.setData('text/plain', JSON.stringify(navPayload));
-              el.classList.add('dragging');
-            });
-            el.addEventListener('dragend', function() { el.classList.remove('dragging'); });
-          }
-          row.appendChild(el);
-        })({ magasin: pair.entrepotRelay, marchandise: pair.marchandise, ut: pair.utNavette,
-             entrepot: pair.entrepotOrigine, zoneLivraison: '', centreComm: '',
-             zoneEntrepot: navItem ? (navItem.zoneEntrepot || '') : '',
-             isNavette: true, _navetteId: pair._navetteId, _navFluxId: pair._navFluxId }, navPlacee);
+        // Bloc navette (entrepôtOrigine → entrepôtRelay) — masqué si paire orpheline (navette absorbée)
+        if (navItem) {
+          (function(navPayload, placed) {
+            var el = document.createElement('div');
+            el.className = 'pfp-navpair-item' + (placed ? ' placed' : '');
+            el.style.background = '#00ACC1';
+            el.textContent = (placed ? '✓ ' : '') + pair.entrepotOrigine + ' → ' + pair.entrepotRelay + ' · ' + pair.utNavette + ' UT';
+            el.title = (placed ? 'Navette planifiée' : 'Glisser vers une tournée') + '\n' + pair.entrepotOrigine + ' → ' + pair.entrepotRelay + '\n' + pair.utNavette + ' UT ' + pair.marchandise;
+            if (!placed) {
+              el.draggable = true;
+              el.dataset.navetteId = navPayload._navetteId;
+              el.addEventListener('dragstart', function(e) {
+                e.dataTransfer.setData('text/plain', JSON.stringify(navPayload));
+                AppState._dragNavetteSrc = { _navetteId: navPayload._navetteId, entrepot: navPayload.entrepot, magasin: navPayload.magasin };
+                el.classList.add('dragging');
+              });
+              el.addEventListener('dragend', function() {
+                el.classList.remove('dragging');
+                AppState._dragNavetteSrc = null;
+              });
+              el.addEventListener('dragover', function(e) {
+                if (AppState._dragNavetteSrc && AppState._dragNavetteSrc._navetteId !== navPayload._navetteId) {
+                  e.preventDefault(); e.stopPropagation();
+                  el.classList.add('navette-merge-target');
+                }
+              });
+              el.addEventListener('dragleave', function() { el.classList.remove('navette-merge-target'); });
+              el.addEventListener('drop', function(e) {
+                el.classList.remove('navette-merge-target');
+                if (!AppState._dragNavetteSrc || AppState._dragNavetteSrc._navetteId === navPayload._navetteId) return;
+                e.preventDefault(); e.stopPropagation();
+                _tentativeFusionNavettes(AppState._dragNavetteSrc._navetteId, navPayload._navetteId);
+              });
+            }
+            row.appendChild(el);
+          })({ magasin: pair.entrepotRelay, marchandise: pair.marchandise, ut: pair.utNavette,
+               entrepot: pair.entrepotOrigine, zoneLivraison: '', centreComm: '',
+               zoneEntrepot: navItem ? (navItem.zoneEntrepot || '') : '',
+               isNavette: true, _navetteId: pair._navetteId, _navFluxId: pair._navFluxId }, navPlacee);
 
-        var sep = document.createElement('span');
-        sep.style.cssText = 'color:#00838F;font-weight:700;font-size:12px';
-        sep.textContent = '→';
-        row.appendChild(sep);
+          var sep = document.createElement('span');
+          sep.style.cssText = 'color:#00838F;font-weight:700;font-size:12px';
+          sep.textContent = '→';
+          row.appendChild(sep);
+        }
 
-        // Bloc flux dérivé (entrepôtRelay → magasin)
+        // Bloc flux dérivé (entrepôtRelay → magasin) — UT propre au dérivé, indépendant de la navette
+        var utDer = derItem ? (parseFloat(derItem.ut) || pair.utNavette) : pair.utNavette;
         (function(derPayload, placed) {
           var el = document.createElement('div');
           el.className = 'pfp-navpair-item' + (placed ? ' placed' : '');
           el.style.background = '#0097A7';
-          el.textContent = (placed ? '✓ ' : '') + pair.entrepotRelay + ' → ' + pair.magasin + ' · ' + pair.utNavette + ' UT';
-          el.title = (placed ? 'Flux dérivé planifié' : 'Glisser vers une tournée départ ' + pair.entrepotRelay) + '\n' + pair.entrepotRelay + ' → ' + pair.magasin + '\n' + pair.utNavette + ' UT ' + pair.marchandise;
+          el.textContent = (placed ? '✓ ' : '') + pair.entrepotRelay + ' → ' + pair.magasin + ' · ' + utDer + ' UT';
+          el.title = (placed ? 'Flux dérivé planifié' : 'Glisser vers une tournée départ ' + pair.entrepotRelay) + '\n' + pair.entrepotRelay + ' → ' + pair.magasin + '\n' + utDer + ' UT ' + pair.marchandise;
           if (!placed) {
             el.draggable = true;
             el.addEventListener('dragstart', function(e) {
@@ -3682,7 +3710,7 @@ function rendrePlanningFlux(data) {
             el.addEventListener('dragend', function() { el.classList.remove('dragging'); });
           }
           row.appendChild(el);
-        })({ magasin: pair.magasin, marchandise: pair.marchandise, ut: pair.utNavette,
+        })({ magasin: pair.magasin, marchandise: pair.marchandise, ut: utDer,
              entrepot: pair.entrepotRelay,
              zoneLivraison: derItem ? (derItem.zoneLivraison || '') : '',
              centreComm: derItem ? (derItem.centreComm || '') : '',
@@ -3692,7 +3720,10 @@ function rendrePlanningFlux(data) {
         // Statut global + bouton supprimer
         var status = document.createElement('span');
         status.className = 'pfp-navpair-status';
-        status.textContent = navPlacee && derivePlacee ? '✓ Planifiée' : navPlacee ? '⋯ Flux dérivé restant' : '⋯ À planifier';
+        var estOrpheline = !navItem;
+        status.textContent = estOrpheline
+          ? (derivePlacee ? '✓ Planifiée' : '⋯ Flux dérivé à planifier')
+          : (navPlacee && derivePlacee ? '✓ Planifiée' : navPlacee ? '⋯ Flux dérivé restant' : '⋯ À planifier');
 
         (function(navFluxId) {
           var delB = document.createElement('button');
@@ -3764,8 +3795,28 @@ function rendrePlanningFlux(data) {
       el.addEventListener('dragstart', function(e) {
         e.dataTransfer.setData('text/plain', JSON.stringify(payload));
         el.classList.add('dragging');
+        if (b.isNavette) AppState._dragNavetteSrc = { _navetteId: f._navetteId, entrepot: f.entrepot, magasin: f.magasin };
       });
-      el.addEventListener('dragend', function() { el.classList.remove('dragging'); });
+      el.addEventListener('dragend', function() {
+        el.classList.remove('dragging');
+        if (b.isNavette) AppState._dragNavetteSrc = null;
+      });
+      if (b.isNavette) {
+        el.dataset.navetteId = f._navetteId;
+        el.addEventListener('dragover', function(e) {
+          if (AppState._dragNavetteSrc && AppState._dragNavetteSrc._navetteId !== f._navetteId) {
+            e.preventDefault(); e.stopPropagation();
+            el.classList.add('navette-merge-target');
+          }
+        });
+        el.addEventListener('dragleave', function() { el.classList.remove('navette-merge-target'); });
+        el.addEventListener('drop', function(e) {
+          el.classList.remove('navette-merge-target');
+          if (!AppState._dragNavetteSrc || AppState._dragNavetteSrc._navetteId === f._navetteId) return;
+          e.preventDefault(); e.stopPropagation();
+          _tentativeFusionNavettes(AppState._dragNavetteSrc._navetteId, f._navetteId);
+        });
+      }
 
       // Bouton ✕ sur les navettes (et flux dérivés via cascade)
       if (b.isNavette || b.isFluxDerive) {
@@ -4097,6 +4148,40 @@ function _calculerUtAffectee(flux, jour) {
 
 // ── Suppression navettisation en cascade ────────────────
 function _supprimerNavettisation(navFluxId) {
+  // ── Réversibilité fusion : ajuster avant suppression ──
+  var _fn = (AppState.fluxNavettes || []).filter(function(f) { return f._navFluxId === navFluxId; })[0];
+  if (_fn && _fn._fusionInfo) {
+    var fi = _fn._fusionInfo;
+    if (fi.role === 'tgt') {
+      // Suppression de la CIBLE : restituer les UT à la source
+      var _fnSrc = (AppState.fluxNavettes || []).filter(function(f) { return f._navFluxId === fi.peerNavFluxId; })[0];
+      if (_fnSrc) {
+        if (fi.srcNavette) {
+          // Fusion totale : source avait été supprimée → la remettre dans navettesLibres
+          AppState.navettesLibres = (AppState.navettesLibres || []).concat([fi.srcNavette]);
+          _fnSrc._navetteId = fi.srcNavette._navetteId;
+          _fnSrc.utNavette  = parseFloat(fi.srcNavette.ut) || 0;
+        } else {
+          // Fusion partielle : source existe encore → rendre ses UT
+          var _srcNav = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === _fnSrc._navetteId; })[0];
+          if (_srcNav) _srcNav.ut = Math.round((_srcNav.ut + fi.utTransfere) * 10) / 10;
+          _fnSrc.utNavette = _srcNav ? _srcNav.ut : _fnSrc.utNavette;
+        }
+        delete _fnSrc._fusionInfo;
+      }
+    } else if (fi.role === 'src') {
+      // Suppression de la SOURCE orpheline : reprendre ses UT depuis la cible
+      var _fnTgt2 = (AppState.fluxNavettes || []).filter(function(f) { return f._navFluxId === fi.peerNavFluxId; })[0];
+      var _tgtNav = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === fi.tgtNavetteId; })[0];
+      if (_tgtNav) _tgtNav.ut = Math.round(Math.max(0, _tgtNav.ut - fi.utTransfere) * 10) / 10;
+      if (_fnTgt2) { _fnTgt2.utNavette = Math.round(Math.max(0, _fnTgt2.utNavette - fi.utTransfere) * 10) / 10; delete _fnTgt2._fusionInfo; }
+    } else if (fi.role === 'emptyTgt') {
+      // Cible était vide : restaurer la cible en état vide (le flux src est supprimé)
+      var _tgtNav2 = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === fi.tgtNavetteId; })[0];
+      if (_tgtNav2) { _tgtNav2.ut = Math.round(Math.max(0, _tgtNav2.ut - fi.utTransfere) * 10) / 10; delete _tgtNav2._navFluxId; }
+    }
+  }
+  // ── Suppression normale ──
   AppState.fluxNavettes = (AppState.fluxNavettes || []).filter(function(fn) { return fn._navFluxId !== navFluxId; });
   Object.keys(AppState.planLocal || {}).forEach(function(tid) {
     AppState.planLocal[tid] = (AppState.planLocal[tid] || []).filter(function(pf) {
@@ -4135,6 +4220,119 @@ function supprimerNavette(navetteId) {
   }
 }
 
+function _tentativeFusionNavettes(srcId, tgtId) {
+  var src = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === srcId; })[0];
+  var tgt = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === tgtId; })[0];
+  if (!src || !tgt) return;
+
+  // Même route ?
+  if (src.entrepot !== tgt.entrepot || src.magasin !== tgt.magasin) {
+    afficherToast('⚠️ Fusion impossible — routes différentes', 'avertissement');
+    return;
+  }
+
+  // Compatibilité R2
+  var fluxTest = [];
+  if (src.marchandise) fluxTest.push({ marchandise: src.marchandise });
+  if (tgt.marchandise) fluxTest.push({ marchandise: tgt.marchandise });
+  if (fluxTest.length >= 2) {
+    var testR2 = validerCompatibiliteMarchandises(fluxTest);
+    if (!testR2.valide) {
+      afficherToast('🚫 R2 — Incompatibilité : ' + testR2.incompatibilites.join(', '), 'erreur');
+      return;
+    }
+  }
+
+  var utSrc = parseFloat(src.ut) || 0;
+  var utTgt = parseFloat(tgt.ut) || 0;
+  var capRestante = Math.max(0, 33 - utTgt);
+
+  if (utSrc > 0 && capRestante <= 0) {
+    afficherToast('🚫 Navette cible pleine (' + utTgt + '/33 UT)', 'erreur');
+    return;
+  }
+
+  var utTransfere = Math.round(Math.min(utSrc, capRestante) * 10) / 10;
+  var fusionComplete = (utSrc <= capRestante + 0.001);
+
+  var labelSrc = utSrc > 0 ? (utSrc + ' UT' + (src.marchandise ? ' · ' + src.marchandise : '')) : 'vide';
+  var labelTgt = utTgt > 0 ? (utTgt + '/33 UT') : 'vide';
+  var msg = 'Fusionner ?\n' + src.entrepot + ' → ' + src.magasin
+    + '\nSource : ' + labelSrc + '   Cible : ' + labelTgt;
+  if (!fusionComplete) {
+    msg += '\n\n⚠️ Fusion partielle : la cible absorbe ' + capRestante.toFixed(1) + ' UT,'
+      + '\nla source conserve ' + (utSrc - capRestante).toFixed(1) + ' UT.';
+  }
+
+  if (window.confirm(msg)) _executerFusionNavettes(srcId, tgtId);
+}
+
+function _executerFusionNavettes(srcId, tgtId) {
+  var src = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === srcId; })[0];
+  var tgt = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === tgtId; })[0];
+  if (!src || !tgt) return;
+
+  var utSrc       = parseFloat(src.ut) || 0;
+  var utTgt       = parseFloat(tgt.ut) || 0;
+  var capRestante = Math.max(0, 33 - utTgt);
+  var utTransfere = Math.round(Math.min(utSrc, capRestante) * 10) / 10;
+  var fusionComplete = (utSrc <= capRestante + 0.001);
+
+  // Entrées fluxNavettes associées (null si navette à vide)
+  // Les fluxDerivesNavette ne sont jamais modifiés : chaque flux dérivé a sa propre
+  // destination et sera planifié indépendamment comme un flux normal.
+  var fnSrc = src._navFluxId ? (AppState.fluxNavettes || []).filter(function(fn) { return fn._navFluxId === src._navFluxId; })[0] : null;
+  var fnTgt = tgt._navFluxId ? (AppState.fluxNavettes || []).filter(function(fn) { return fn._navFluxId === tgt._navFluxId; })[0] : null;
+
+  // ── Mettre à jour la navette cible ──
+  tgt.ut = Math.round((utTgt + utTransfere) * 10) / 10;
+  if (fnTgt) {
+    // Les UT de la source s'ajoutent au bloc de la réceptrice → un seul bloc affiché
+    fnTgt.utNavette = Math.round((fnTgt.utNavette + utTransfere) * 10) / 10;
+  }
+
+  if (fusionComplete) {
+    // ── Fusion totale : la navette glissée disparaît ──
+    if (fnSrc) {
+      if (fnTgt) {
+        // La navette source est absorbée : on orpheline la paire (plus de navette physique)
+        // pour que son flux dérivé reste visible et planifiable dans le gantt.
+        fnSrc._navetteId = null;
+        fnSrc.utNavette  = 0;
+        fnTgt._fusionInfo = { role: 'tgt', peerNavFluxId: fnSrc._navFluxId, utTransfere: utTransfere, srcNavette: JSON.parse(JSON.stringify(src)) };
+        fnSrc._fusionInfo = { role: 'src', peerNavFluxId: fnTgt._navFluxId, tgtNavetteId: tgt._navetteId, utTransfere: utTransfere };
+      } else {
+        // La cible était à vide → réassigner le flux source vers la navette cible
+        fnSrc._navetteId = tgt._navetteId;
+        tgt._navFluxId   = src._navFluxId;
+        fnSrc._fusionInfo = { role: 'emptyTgt', srcNavette: JSON.parse(JSON.stringify(src)), tgtNavetteId: tgt._navetteId, utTransfere: utTransfere };
+      }
+    }
+    // Supprimer la source de navettesLibres et de tout planLocal où elle aurait été assignée
+    AppState.navettesLibres = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId !== srcId; });
+    Object.keys(AppState.planLocal).forEach(function(tid) {
+      AppState.planLocal[tid] = (AppState.planLocal[tid] || []).filter(function(f) { return f._navetteId !== srcId; });
+    });
+    afficherToast('✅ Navettes fusionnées — ' + (utTransfere > 0 ? utTransfere + ' UT transférées' : 'navette vide absorbée'), 'succes');
+  } else {
+    // ── Fusion partielle : la navette glissée conserve le reliquat ──
+    src.ut = Math.round((utSrc - utTransfere) * 10) / 10;
+    if (fnSrc) fnSrc.utNavette = src.ut;
+    if (fnSrc && fnTgt) {
+      fnTgt._fusionInfo = { role: 'tgt', peerNavFluxId: fnSrc._navFluxId, utTransfere: utTransfere, srcNavette: null };
+      fnSrc._fusionInfo = { role: 'src', peerNavFluxId: fnTgt._navFluxId, tgtNavetteId: tgt._navetteId, utTransfere: utTransfere };
+    }
+    afficherToast('⚠️ Fusion partielle — ' + utTransfere.toFixed(1) + ' UT transférées, ' + src.ut.toFixed(1) + ' UT restantes', 'avertissement');
+  }
+
+  if (AppState.donnees) {
+    rendrePlanningFlux(AppState.donnees);
+    rendreGantt(AppState.donnees);
+    if (AppState.vueActive === 'remorques') rendreGanttRemorques(AppState.donnees);
+    if (AppState.vueActive === 'magasins')  rendreGanttMagasins(AppState.donnees);
+  }
+}
+
 function supprimerTourneeVide(modId, tid) {
   var flux = AppState.planLocal[tid] || [];
   if (flux.length > 0) {
@@ -4165,6 +4363,41 @@ function supprimerTourneeVide(modId, tid) {
 }
 
 function supprimerTourneeNavette(modId, tid) {
+  // ── Réversibilité fusion : restaurer l'état pré-fusion si la tournée contient une navette fusionnée ──
+  (AppState.planLocal[tid] || []).forEach(function(flux) {
+    if (!flux.isNavette || !flux._navFluxId) return;
+    var _fn = (AppState.fluxNavettes || []).filter(function(f) { return f._navFluxId === flux._navFluxId; })[0];
+    if (!_fn || !_fn._fusionInfo) return;
+    var fi = _fn._fusionInfo;
+    if (fi.role === 'tgt') {
+      // La tournée contient la navette CIBLE → restaurer la source
+      var _fnSrc = (AppState.fluxNavettes || []).filter(function(f) { return f._navFluxId === fi.peerNavFluxId; })[0];
+      var _tgtNav = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === _fn._navetteId; })[0];
+      if (_tgtNav) _tgtNav.ut = Math.round(Math.max(0, _tgtNav.ut - fi.utTransfere) * 10) / 10;
+      _fn.utNavette = Math.round(Math.max(0, _fn.utNavette - fi.utTransfere) * 10) / 10;
+      if (_fnSrc) {
+        if (fi.srcNavette) {
+          AppState.navettesLibres = (AppState.navettesLibres || []).concat([fi.srcNavette]);
+          _fnSrc._navetteId = fi.srcNavette._navetteId;
+          _fnSrc.utNavette  = parseFloat(fi.srcNavette.ut) || 0;
+        } else {
+          var _srcNav = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === _fnSrc._navetteId; })[0];
+          if (_srcNav) _srcNav.ut = Math.round((_srcNav.ut + fi.utTransfere) * 10) / 10;
+          _fnSrc.utNavette = _srcNav ? _srcNav.ut : _fnSrc.utNavette;
+        }
+        delete _fnSrc._fusionInfo;
+      }
+      delete _fn._fusionInfo;
+    } else if (fi.role === 'emptyTgt') {
+      // La tournée contient la navette (cible était vide) → restaurer l'état pré-fusion
+      var _tgtNav2 = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === fi.tgtNavetteId; })[0];
+      if (_tgtNav2) { _tgtNav2.ut = Math.round(Math.max(0, _tgtNav2.ut - fi.utTransfere) * 10) / 10; delete _tgtNav2._navFluxId; }
+      AppState.navettesLibres = (AppState.navettesLibres || []).concat([fi.srcNavette]);
+      _fn._navetteId = fi.srcNavette._navetteId;
+      _fn.utNavette  = parseFloat(fi.srcNavette.ut) || 0;
+      delete _fn._fusionInfo;
+    }
+  });
   // Pour chaque navette avec marchandises dans cette tournée, remettre le flux dérivé en attente
   (AppState.planLocal[tid] || []).forEach(function(flux) {
     if (flux.isNavette && flux._navFluxId) {
@@ -5685,6 +5918,110 @@ function detecterConflitsGantt() {
 // ══════════════════════════════════════════════════════
 //  DRAG & DROP
 // ══════════════════════════════════════════════════════
+
+// ── Helpers navette/dérivé ──────────────────────────────────────────────────
+function _findModForTid(tid) {
+  var allMods = [AppState.moduleM0].concat(AppState.modules || []);
+  for (var i = 0; i < allMods.length; i++) {
+    if (allMods[i] && allMods[i].tours && allMods[i].tours.indexOf(tid) >= 0) return allMods[i];
+  }
+  return null;
+}
+
+// Reconstruit l'info tractor d'une tournée (même logique que detecterChevauchementTracteur).
+// extraFlux : flux à ajouter temporairement (pour simuler un dépôt).
+function _getTourneeTractorInfo(tid, extraFlux) {
+  var mod = _findModForTid(tid);
+  if (!mod) return null;
+  var modId   = mod.id || 'M0';
+  var offset  = AppState.modulesOffsets[modId + '_' + tid];
+  if (offset === undefined) offset = 6 * 60;
+  var t       = AppState.donnees ? getTourneeData(tid, AppState.donnees) : null;
+  var ov      = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
+  var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+  var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
+  var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] || 'ENTREPOT').toString() : 'ENTREPOT');
+  var zone    = ov.zone    !== undefined ? ov.zone     : (t && t[6] ? t[6].toString() : '');
+  var flux    = (AppState.planLocal[tid] || []).concat(extraFlux || []);
+  var hasFrais = flux.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise || '').toUpperCase()) >= 0; });
+  var tractorStart = hasFrais ? (offset + chgtDur + admDur) : (offset + admDur);
+  return { tractorStart: tractorStart, offset: offset, chgtDur: chgtDur, admDur: admDur, hasFrais: hasFrais, flux: flux, retour: retour, zone: zone };
+}
+
+// Retourne l'heure de fin de la navette dans le Gantt (minutes abs.).
+// Reproduit exactement le chaînage prevRetour de detecterChevauchementTracteur/rendreGantt.
+function _getNavetteFin(navetteId, navTid) {
+  var mod = _findModForTid(navTid);
+  if (!mod) return null;
+  var modId = mod.id || 'M0';
+  var distMap = {};
+  lireDistancierWb().forEach(function(d) { distMap[d.f + '_' + d.t] = { km: d.km, m: d.m }; });
+
+  // Trier les tournées du module par offset, comme rendreGantt
+  var toursOrd = mod.tours.slice().sort(function(a, b) {
+    return (AppState.modulesOffsets[modId + '_' + a] || 6 * 60)
+         - (AppState.modulesOffsets[modId + '_' + b] || 6 * 60);
+  });
+
+  var prevRetour = null;
+  var navetteFin = null;
+
+  for (var i = 0; i < toursOrd.length; i++) {
+    var tid     = toursOrd[i];
+    var offset  = AppState.modulesOffsets[modId + '_' + tid] || 6 * 60;
+    var t       = AppState.donnees ? getTourneeData(tid, AppState.donnees) : null;
+    var ov      = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
+    var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+    var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
+    var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] || 'ENTREPOT').toString() : 'ENTREPOT');
+    var zone    = ov.zone    !== undefined ? ov.zone     : (t && t[6] ? t[6].toString() : '');
+    var flux    = AppState.planLocal[tid] || [];
+    var hasFrais = flux.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise || '').toUpperCase()) >= 0; });
+    var tractorStart = hasFrais ? (offset + chgtDur + admDur) : (offset + admDur);
+    var lieuDepart   = prevRetour || (flux[0] && flux[0].entrepot) || zone || 'ENTREPOT';
+
+    var blocs = calculerPlanningGantt(tractorStart, flux, distMap, [], retour, admDur, lieuDepart);
+
+    if (tid === navTid) {
+      for (var bi = 0; bi < blocs.length; bi++) {
+        if (blocs[bi].arret && blocs[bi].arret._navetteId === navetteId) {
+          navetteFin = blocs[bi].debut + blocs[bi].duree;
+          break;
+        }
+      }
+      if (navetteFin === null) navetteFin = tractorStart + 60;
+      break;
+    }
+
+    prevRetour = blocs._effectiveRetour || retour;
+  }
+
+  return navetteFin;
+}
+
+// Valide toutes les paires navette/dérivé actives — retourne les violations.
+function _validerContrainteNavettes() {
+  var violations = [];
+  (AppState.fluxNavettes || []).forEach(function(pair) {
+    var navTid    = null;
+    var deriveTid = null;
+    Object.keys(AppState.planLocal).forEach(function(tid) {
+      var plan = AppState.planLocal[tid] || [];
+      if (plan.some(function(pf) { return pf._navetteId === pair._navetteId; }))                       navTid    = tid;
+      if (plan.some(function(pf) { return pf._navFluxId === pair._navFluxId && pf._isFluxNavettise; })) deriveTid = tid;
+    });
+    if (!navTid || !deriveTid) return;
+    var navetteFin  = _getNavetteFin(pair._navetteId, navTid);
+    var deriveInfo  = _getTourneeTractorInfo(deriveTid);
+    if (navetteFin === null || !deriveInfo) return;
+    if (navetteFin > deriveInfo.tractorStart + 1) {
+      violations.push({ pair: pair, navTid: navTid, deriveTid: deriveTid, navetteFin: navetteFin, deriveTractorStart: deriveInfo.tractorStart });
+    }
+  });
+  return violations;
+}
+// ───────────────────────────────────────────────────────────────────────────
+
 function onFluxDepose(flux, tourneeId, capacite) {
   // Exclusivité navette : pas de mélange flux normaux / navettes
   var _existing = AppState.planLocal[tourneeId] || [];
@@ -5699,10 +6036,15 @@ function onFluxDepose(flux, tourneeId, capacite) {
   if (flux._isFluxNavettise && flux._navFluxId) {
     var _fnPair = (AppState.fluxNavettes || []).filter(function(fn) { return fn._navFluxId === flux._navFluxId; })[0];
     if (_fnPair) {
+      // Pour une paire orpheline (navette source fusionnée), la navette à vérifier
+      // est la navette cible qui la remplace dans le gantt.
+      var _navetteIdEffective = (_fnPair._navetteId != null)
+        ? _fnPair._navetteId
+        : (_fnPair._fusionInfo ? _fnPair._fusionInfo.tgtNavetteId : null);
       // 1. La navette doit être dans planLocal
       var _navTid = null;
       Object.keys(AppState.planLocal).forEach(function(tid) {
-        if ((AppState.planLocal[tid] || []).some(function(pf) { return pf._navetteId === _fnPair._navetteId; })) {
+        if ((AppState.planLocal[tid] || []).some(function(pf) { return pf._navetteId === _navetteIdEffective; })) {
           _navTid = tid;
         }
       });
@@ -5710,19 +6052,16 @@ function onFluxDepose(flux, tourneeId, capacite) {
         afficherToast('🚫 Placez d\'abord la navette (' + _fnPair.entrepotOrigine + ' → ' + _fnPair.entrepotRelay + ') avant le flux dérivé', 'erreur');
         return;
       }
-      // 2. L'offset de la tournée cible doit être ≥ celui de la navette
-      function _getOffsetForTid(tid) {
-        var keys = Object.keys(AppState.modulesOffsets || {});
-        for (var ki = 0; ki < keys.length; ki++) {
-          var k = keys[ki];
-          if (k.slice(k.indexOf('_') + 1) === tid) return AppState.modulesOffsets[k];
-        }
-        return 6 * 60; // défaut 6h
-      }
-      var _offNav    = _getOffsetForTid(_navTid);
-      var _offDerive = _getOffsetForTid(tourneeId);
-      if (_offDerive < _offNav - 1) {
-        afficherToast('🚫 Le flux dérivé ne peut pas partir avant la navette (' + minutesVersHeure(_offNav) + ' → ' + minutesVersHeure(_offDerive) + ')', 'erreur');
+      // 2. Vérifier que T2 part après l'arrivée réelle de la navette (calcul Gantt précis)
+      var _navetteFin  = _getNavetteFin(_navetteIdEffective, _navTid);
+      var _deriveInfo  = _getTourneeTractorInfo(tourneeId, [flux]);
+      var _deriveTractorStart = _deriveInfo ? _deriveInfo.tractorStart : (6 * 60);
+      if (_navetteFin !== null && _navetteFin > _deriveTractorStart + 1) {
+        afficherToast(
+          '🚫 Flux dérivé part à ' + minutesVersHeure(Math.round(_deriveTractorStart)) +
+          ' avant l\'arrivée de la navette (' + minutesVersHeure(Math.round(_navetteFin)) + ')',
+          'erreur'
+        );
         return;
       }
     }
@@ -6107,7 +6446,14 @@ function _afOpt_getCartoCreneau(magasin, jour, marchandise) {
   var cartoBase = AppState.cartographiePlages || {};
   var magData   = cartoBase[magasin];
   if (!magData) return [];
-  var jourData  = magData[jour];
+  var jourData = magData[jour];
+  if (!jourData) {
+    var jourLower = (jour || '').toLowerCase();
+    var keys = Object.keys(magData);
+    for (var ki = 0; ki < keys.length; ki++) {
+      if (keys[ki].toLowerCase() === jourLower) { jourData = magData[keys[ki]]; break; }
+    }
+  }
   if (!jourData) return [];
   // Déterminer la catégorie
   var m = (marchandise || '').toUpperCase();
@@ -6120,13 +6466,12 @@ function _afOpt_getCartoCreneau(magasin, jour, marchandise) {
 
 function _afOpt_collectFlux(donnees, jour) {
   var result = [];
-  // donnees = AppState.donnees = { flux: [[...], ...], lieux: [...] }
+  var jourLower = (jour || '').toLowerCase();
   var rows = (donnees && donnees.flux) ? donnees.flux.slice(1) : [];
   rows.forEach(function(row) {
     if (!row) return;
-    // Colonnes : [0]ZoneEntr [1]Entrepot [2]ZoneLiv [3]CentreComm [4]Magasin [5]Marc [6]UT [7]Jour
     var jourRow = row[7] ? row[7].toString() : '';
-    if (jourRow !== jour) return;
+    if (jourRow.toLowerCase() !== jourLower) return;
     var mag  = row[4] ? row[4].toString().trim() : '';
     var marc = row[5] ? row[5].toString().toUpperCase().trim() : '';
     var ut   = parseFloat(row[6]) || 0;
@@ -6184,6 +6529,12 @@ function _afOpt_phase0_extractContextualTournees(jour, dm) {
   var jourNext = (typeof getJourSuivant  === 'function') ? getJourSuivant(jour)  : null;
   var result   = [];
 
+  // Construit dmGantt une seule fois (séparateur '_' pour calculerPlanningGantt)
+  var dmGantt = {};
+  lireDistancierWb().forEach(function(d) {
+    dmGantt[d.f + '_' + d.t] = { km: d.km, m: d.m };
+  });
+
   function extractForJour(jourCible, shift) {
     if (!jourCible) return;
     Object.keys(AppState.planLocal || {}).forEach(function(tid) {
@@ -6207,6 +6558,7 @@ function _afOpt_phase0_extractContextualTournees(jour, dm) {
       var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (parseFloat(tData[4]) || 30);
       var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (parseFloat(tData[3]) || 15);
       var dep     = (flux[0] && flux[0].entrepot) || 'ENTREPOT';
+      var retour  = ov.retour  !== undefined ? ov.retour   : ((tData && tData[2]) ? tData[2].toString() : dep);
 
       var hasFrais = flux.some(function(f) {
         return _FAMILLE_FRAIS.indexOf((f.marchandise || '').toUpperCase()) >= 0;
@@ -6215,13 +6567,8 @@ function _afOpt_phase0_extractContextualTournees(jour, dm) {
         ? (offset + chgtDur + admDur)
         : (offset + admDur);
 
-      // Construire un distMap avec séparateur '_' pour calculerPlanningGantt
-      var dmGantt = {};
-      lireDistancierWb().forEach(function(d) {
-        dmGantt[d.f + '_' + d.t] = { km: d.km, m: d.m };
-      });
       var blocs = (typeof calculerPlanningGantt === 'function')
-        ? calculerPlanningGantt(tractorStart, flux, dmGantt, [], dep, admDur, dep)
+        ? calculerPlanningGantt(tractorStart, flux, dmGantt, [], retour, admDur, dep)
         : [];
 
       blocs.forEach(function(b) {
@@ -6396,10 +6743,15 @@ function _afOpt_simulerGroupe(entrepot, arrets, dm, jour) {
   for (var i = 0; i < arrets.length; i++) {
     var arret = arrets[i];
     var d     = _afOpt_getDist(dm, lieu, arret.magasin);
-    if (!d) return { error: 'dist_manquante', flux: arret };
-
+    if (!d) {
+      console.warn('[afOpt] dist manquante :', lieu, '→', arret.magasin);
+      return { error: 'dist_manquante', flux: arret };
+    }
     var crens = _afOpt_getCartoCreneau(arret.magasin, jour, arret.marchandise);
-    if (!crens || !crens.length) return { error: 'carto_vide', flux: arret };
+    if (!crens || !crens.length) {
+      console.warn('[afOpt] carto vide :', arret.magasin, '/', jour, '/', arret.marchandise);
+      return { error: 'carto_vide', flux: arret };
+    }
 
     var segDrive = d.m;
     var rseExtra = 0;
@@ -6443,12 +6795,15 @@ function _afOpt_simulerGroupe(entrepot, arrets, dm, jour) {
 }
 
 function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDur) {
-  chgtDur = chgtDur || 30;
-  admDur  = admDur  || 15;
+  chgtDur = (chgtDur !== undefined && chgtDur !== null) ? +chgtDur : 30;
+  admDur  = (admDur  !== undefined && admDur  !== null) ? +admDur  : 15;
   var SETUP = chgtDur + admDur;
 
   var sim = _afOpt_simulerGroupe(entrepot, arrets, dm, jour);
-  if (!sim.valid) return [];
+  if (!sim.valid) {
+    console.warn('[afOpt] computeIntervals: sim invalide', sim.error, sim.flux && sim.flux.magasin);
+    return [];
+  }
 
   var validSegments = [{ debut: -1440, fin: 2880 }];
 
@@ -6516,8 +6871,27 @@ function _afOpt_permutations(arr) {
   return result;
 }
 
+// Nearest-neighbour greedy order for groups with many distinct stops
+function _afOpt_nearestNeighbour(entrepot, mags, dm) {
+  var remaining = mags.slice(), ordered = [], current = entrepot;
+  while (remaining.length) {
+    var bi = 0, bd = Infinity;
+    for (var i = 0; i < remaining.length; i++) {
+      var d  = _afOpt_getDist(dm, current, remaining[i]);
+      var di = d ? d.m : Infinity;
+      if (di < bd) { bd = di; bi = i; }
+    }
+    current = remaining[bi];
+    ordered.push(current);
+    remaining.splice(bi, 1);
+  }
+  return ordered;
+}
+
+var _PERM_EXACT_LIMIT = 7; // N! tractable pour N ≤ 7 (5040 perms)
+
 function _afOpt_findBestPermutation(groupe, dm, jour) {
-  var magasinsVus      = {};
+  var magasinsVus       = {};
   var magasinsDistincts = [];
 
   groupe.flux.forEach(function(f) {
@@ -6543,7 +6917,18 @@ function _afOpt_findBestPermutation(groupe, dm, jour) {
     });
   }
 
-  var perms = _afOpt_permutations(magasinsDistincts);
+  // SETUP correct selon famille : FRAIS/SURG = chgt(30)+adm(15) = 45, SEC = adm seul = 15
+  var isFraisOuSurg = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG');
+  var chgtDurG      = isFraisOuSurg ? 30 : 0;
+
+  // Pour N > _PERM_EXACT_LIMIT : nearest-neighbour (évite l'explosion N!)
+  var perms;
+  if (magasinsDistincts.length > _PERM_EXACT_LIMIT) {
+    perms = [_afOpt_nearestNeighbour(groupe.entrepot, magasinsDistincts, dm)];
+  } else {
+    perms = _afOpt_permutations(magasinsDistincts);
+  }
+
   var best  = null;
   var gamma = 1;
   var delta = 0.5;
@@ -6551,7 +6936,7 @@ function _afOpt_findBestPermutation(groupe, dm, jour) {
   perms.forEach(function(perm) {
     var arrets    = buildArrets(perm);
     var intervals = _afOpt_computeValidIntervals(
-      groupe.entrepot, arrets, dm, jour, 30, 15
+      groupe.entrepot, arrets, dm, jour, chgtDurG, 15
     );
     if (!intervals.length) return;
 
@@ -6575,6 +6960,11 @@ function _afOpt_findBestPermutation(groupe, dm, jour) {
     }
   });
 
+  if (!best) {
+    console.warn('[afOpt] findBestPerm: aucune permutation valide —',
+      groupe.famille, groupe.entrepot,
+      groupe.flux.map(function(f) { return f.magasin; }).join(', '));
+  }
   return best;
 }
 
@@ -6600,12 +6990,13 @@ function _afOpt_trierGroupes(groupesValides) {
 // PHASE 1.6 — Placement First Fit + anti-téléportation
 // ══════════════════════════════════════════════════════════════════
 
-function _afOpt_filtrerIntervals(intervals, deliveryTimes) {
+function _afOpt_filtrerIntervals(intervals, deliveryTimes, setup) {
+  setup = (setup !== undefined) ? setup : 45;
   return intervals.filter(function(iv) {
     var t = iv.debut;
     for (var i = 0; i < deliveryTimes.length; i++) {
       var dt   = deliveryTimes[i];
-      var deb  = t + 45 + dt.debutRel;
+      var deb  = t + setup + dt.debutRel;
       var fin  = deb + dt.svc;
       var slots = _afOpt_storeSlots[dt.magasin] || [];
       for (var j = 0; j < slots.length; j++) {
@@ -6616,9 +7007,44 @@ function _afOpt_filtrerIntervals(intervals, deliveryTimes) {
   });
 }
 
-function _afOpt_enregistrerSlots(tourEntry) {
+// Cherche le premier offsetMin valide dans les intervalles en évitant les conflits storeSlots.
+// Avance t au-delà de chaque créneau occupé jusqu'à trouver une position sans conflit.
+function _afOpt_trouverOffsetMin(intervals, deliveryTimes, setup) {
+  setup = (setup !== undefined) ? setup : 45;
+  for (var ii = 0; ii < intervals.length; ii++) {
+    var iv = intervals[ii];
+    var t  = iv.debut;
+    var iter = 0;
+    while (t <= iv.fin && iter++ < 500) {
+      var tNext = Infinity;
+      var ok    = true;
+      for (var i = 0; i < deliveryTimes.length; i++) {
+        var dt   = deliveryTimes[i];
+        var deb  = t + setup + dt.debutRel;
+        var fin  = deb + dt.svc;
+        var slots = _afOpt_storeSlots[dt.magasin] || [];
+        for (var j = 0; j < slots.length; j++) {
+          var s = slots[j];
+          if (deb < s.end && fin > s.start) {
+            ok = false;
+            // Avancer t pour que la livraison commence après la fin du créneau occupé
+            var tCandidate = s.end - setup - dt.debutRel;
+            if (tCandidate > t) tNext = Math.min(tNext, tCandidate);
+          }
+        }
+      }
+      if (ok) return t;
+      if (tNext === Infinity || tNext <= t) break;
+      t = tNext;
+    }
+  }
+  return null;
+}
+
+function _afOpt_enregistrerSlots(tourEntry, setup) {
+  setup = (setup !== undefined) ? setup : 45;
   tourEntry.deliveryTimes.forEach(function(dt) {
-    var deb = tourEntry.offsetMin + 45 + dt.debutRel;
+    var deb = tourEntry.offsetMin + setup + dt.debutRel;
     var fin = deb + dt.svc;
     if (!_afOpt_storeSlots[dt.magasin]) _afOpt_storeSlots[dt.magasin] = [];
     _afOpt_storeSlots[dt.magasin].push({
@@ -6628,179 +7054,56 @@ function _afOpt_enregistrerSlots(tourEntry) {
 }
 
 function _afOpt_placerGroupe(groupe, best, dm, jour) {
-  var SETUP = 45; // chgt(30) + adm(15)
+  // FRAIS/SURG : chgt(30) + adm(15) = 45 ; SEC : adm seul = 15
+  var SETUP = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 45 : 15;
 
-  var intervals = _afOpt_filtrerIntervals(best.intervals, best.deliveryTimes);
-  if (!intervals.length) return { placed: false, reason: 'creneaux_satures' };
-
-  // ── Tenter chaque module existant ─────────────────────────────
-  for (var mi = 0; mi < _afOpt_modulesInternes.length; mi++) {
-    var mod    = _afOpt_modulesInternes[mi];
-    var sorted = mod.tours.slice().sort(function(a, b) {
-      return a.offsetMin - b.offsetMin;
-    });
-
-    var positions = [];
-    positions.push({ prevTour: null, nextTour: sorted[0] || null });
-    for (var ti = 0; ti < sorted.length - 1; ti++) {
-      positions.push({ prevTour: sorted[ti], nextTour: sorted[ti + 1] });
-    }
-    if (sorted.length > 0) {
-      positions.push({ prevTour: sorted[sorted.length - 1], nextTour: null });
-    }
-
-    for (var pi = 0; pi < positions.length; pi++) {
-      var pos      = positions[pi];
-      var prevTour = pos.prevTour;
-      var nextTour = pos.nextTour;
-
-      var tMin = intervals[0].debut;
-      var tMax = intervals[intervals.length - 1].fin;
-
-      if (prevTour) {
-        var dPrevEntr = _afOpt_getDist(dm,
-          prevTour.arrets[prevTour.arrets.length - 1].magasin,
-          groupe.entrepot
-        );
-        tMin = Math.max(tMin,
-          prevTour.finMin
-          - (prevTour._retourDuree || 0)
-          + (dPrevEntr ? dPrevEntr.m : 0)
-        );
-      }
-
-      if (nextTour) {
-        var dCandNext = _afOpt_getDist(dm,
-          best.arrets[best.arrets.length - 1].magasin,
-          nextTour.arrets[0].magasin
-        );
-        tMax = Math.min(tMax,
-          nextTour.offsetMin - SETUP - best.duree - (dCandNext ? dCandNext.m : 0)
-        );
-      }
-
-      if (tMax <= tMin) continue;
-
-      var ivFiltrees = intervals
-        .filter(function(iv) { return iv.fin > tMin && iv.debut < tMax; })
-        .map(function(iv) {
-          return {
-            debut: Math.max(iv.debut, tMin),
-            fin:   Math.min(iv.fin,   tMax)
-          };
-        })
-        .filter(function(iv) { return iv.fin > iv.debut; });
-
-      if (!ivFiltrees.length) continue;
-
-      var offsetMin = ivFiltrees[0].debut;
-      var finMin    = offsetMin + SETUP + best.duree;
-
-      // Vérification finale storeSlots
-      var ivCheck = _afOpt_filtrerIntervals(
-        [{ debut: offsetMin, fin: offsetMin + 1 }], best.deliveryTimes
-      );
-      if (!ivCheck.length) continue;
-
-      // ✅ Placement retenu dans module existant
-      var tid  = _afOpt_genTid();
-      var marc = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
-      if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
-      AppState.tourneesLocales.push([
-        tid, 33, groupe.entrepot, 15, 30, 'Non', marc, jour
-      ]);
-      AppState.planLocal[tid] = groupe.flux.map(function(f) {
-        return Object.assign({}, f);
-      });
-      _afOpt_autoCreatedTids.push(tid);
-
-      // Ajouter au module AppState
-      var modAppState = AppState.modules.filter(function(m) {
-        return m.id === mod.modId;
-      })[0];
-      if (modAppState) modAppState.tours.push(tid);
-      AppState.modulesOffsets[mod.modId + '_' + tid] = offsetMin;
-
-      var dRet = best.arrets.length
-        ? _afOpt_getDist(dm,
-            best.arrets[best.arrets.length - 1].magasin,
-            groupe.entrepot)
-        : null;
-
-      var tourEntry = {
-        tid:           tid,
-        offsetMin:     offsetMin,
-        finMin:        finMin,
-        entrepot:      groupe.entrepot,
-        retour:        groupe.entrepot,
-        arrets:        best.arrets,
-        deliveryTimes: best.deliveryTimes,
-        _retourDuree:  dRet ? dRet.m : 0
-      };
-      mod.tours.push(tourEntry);
-
-      // Mettre à jour le retour de T_prev (anti-téléportation)
-      if (prevTour) {
-        prevTour.retour = groupe.entrepot;
-        var dPrevRet = _afOpt_getDist(dm,
-          prevTour.arrets[prevTour.arrets.length - 1].magasin,
-          groupe.entrepot
-        );
-        prevTour._retourDuree = dPrevRet ? dPrevRet.m : 0;
-        prevTour.finMin = prevTour.offsetMin + SETUP
-          + (prevTour.deliveryTimes.length
-              ? prevTour.deliveryTimes[prevTour.deliveryTimes.length - 1].finRel
-              : 0)
-          + prevTour._retourDuree;
-        if (!AppState.tourneeOverrides) AppState.tourneeOverrides = {};
-        if (!AppState.tourneeOverrides[prevTour.tid]) AppState.tourneeOverrides[prevTour.tid] = {};
-        AppState.tourneeOverrides[prevTour.tid].retour = groupe.entrepot;
-      }
-
-      _afOpt_enregistrerSlots(tourEntry);
-      return { placed: true, tid: tid, modId: mod.modId, offsetMin: offsetMin };
-    }
+  // Première position valide (avance automatiquement past les créneaux storeSlots occupés)
+  var offsetMin = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP);
+  if (offsetMin === null) {
+    console.warn('[afOpt] placerGroupe: aucun créneau libre —',
+      groupe.famille, groupe.entrepot,
+      groupe.flux.map(function(f) { return f.magasin; }).join(', '));
+    return { placed: false, reason: 'creneaux_satures' };
   }
 
-  // ── Créer un nouveau module ────────────────────────────────────
-  var offsetMin2 = intervals[0].debut;
-  var finMin2    = offsetMin2 + SETUP + best.duree;
-  var tid2       = _afOpt_genTid();
-  var marc2      = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
+  var finMin    = offsetMin + SETUP + best.duree;
+  var tid       = _afOpt_genTid();
+  var marc      = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
+  var chgtSaved = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 30 : 0;
 
   if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
-  AppState.tourneesLocales.push([tid2, 33, groupe.entrepot, 15, 30, 'Non', marc2, jour]);
-  AppState.planLocal[tid2] = groupe.flux.map(function(f) { return Object.assign({}, f); });
-  _afOpt_autoCreatedTids.push(tid2);
+  AppState.tourneesLocales.push([tid, 33, groupe.entrepot, 15, chgtSaved, 'Non', marc, jour]);
+  AppState.planLocal[tid] = groupe.flux.map(function(f) { return Object.assign({}, f); });
+  _afOpt_autoCreatedTids.push(tid);
 
-  var nums = AppState.modules.map(function(m) {
-    return parseInt(m.id.replace(/\D/g, '')) || 0;
-  });
-  var nxt      = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
-  var newModId = 'M' + nxt;
-  AppState.modules.push({ id: newModId, tours: [tid2] });
-  _afOpt_autoCreatedModIds.push(newModId);
-  AppState.modulesOffsets[newModId + '_' + tid2] = offsetMin2;
+  // Un shift par tournée : chaque tournée obtient son propre module
+  var nums  = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g, '')) || 0; });
+  var nxt   = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
+  var modId = 'M' + nxt;
+  AppState.modules.push({ id: modId, tours: [tid] });
+  _afOpt_autoCreatedModIds.push(modId);
+  AppState.modulesOffsets[modId + '_' + tid] = offsetMin;
 
-  var dRet2 = best.arrets.length
+  var dRet = best.arrets.length
     ? _afOpt_getDist(dm, best.arrets[best.arrets.length - 1].magasin, groupe.entrepot)
     : null;
 
-  var tourEntry2 = {
-    tid:           tid2,
-    offsetMin:     offsetMin2,
-    finMin:        finMin2,
+  var tourEntry = {
+    tid:           tid,
+    offsetMin:     offsetMin,
+    finMin:        finMin,
     entrepot:      groupe.entrepot,
     retour:        groupe.entrepot,
     arrets:        best.arrets,
     deliveryTimes: best.deliveryTimes,
-    _retourDuree:  dRet2 ? dRet2.m : 0
+    _retourDuree:  dRet ? dRet.m : 0,
+    _setup:        SETUP
   };
 
-  _afOpt_modulesInternes.push({ modId: newModId, tours: [tourEntry2] });
-  _afOpt_enregistrerSlots(tourEntry2);
+  _afOpt_modulesInternes.push({ modId: modId, tours: [tourEntry] });
+  _afOpt_enregistrerSlots(tourEntry, SETUP);
 
-  return { placed: true, tid: tid2, modId: newModId, offsetMin: offsetMin2 };
+  return { placed: true, tid: tid, modId: modId, offsetMin: offsetMin };
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -7051,173 +7354,186 @@ function autoFillOptimise() {
 
   _afOpt_updateProgress(0.01, 'Initialisation…');
 
+  // Variables partagées entre les chunks (déclarées ici pour portée correcte)
+  var _opt_dm, _opt_jour, _opt_groupes, _opt_groupesValides, _opt_groupesInvalides;
+  var _TIMEOUT_MS = 5 * 60 * 1000;
+
+  // ── Chunk 3 : placement + LNS ─────────────────────────────────
+  var lancerPlacement = function() {
+    try {
+      var groupesTries     = _afOpt_trierGroupes(_opt_groupesValides);
+      var groupesNonPlaces = _opt_groupesInvalides.slice();
+      var unplanned        = [];
+
+      _afOpt_updateProgress(0.30, 'Phase 1 — Placement dans les modules…');
+      console.log('[afOpt] Phase 1.5 — tri OK, ' + groupesTries.length + ' groupes valides');
+
+      var placerChunk = function(idx) {
+        try {
+          if (_afOpt_cancelled || idx >= groupesTries.length) {
+            var tourStates = _afOpt_autoCreatedTids.map(function(tid) {
+              var flux      = AppState.planLocal[tid] || [];
+              var modId     = null;
+              var offsetMin = 6 * 60;
+              AppState.modules.forEach(function(m) {
+                if (m.tours && m.tours.indexOf(tid) >= 0) {
+                  modId = m.id;
+                  var key = m.id + '_' + tid;
+                  if (AppState.modulesOffsets[key] !== undefined) offsetMin = AppState.modulesOffsets[key];
+                }
+              });
+              var tData = (AppState.tourneesLocales || []).filter(function(t) {
+                return String(t[0]) === tid;
+              })[0];
+              return {
+                tid: tid, modId: modId,
+                entrepot:  tData ? tData[2] : 'ENTREPOT',
+                retour:    tData ? tData[2] : 'ENTREPOT',
+                flux:      flux,
+                offsetMin: offsetMin,
+                chgtDur:   tData ? parseFloat(tData[4]) || 0 : 0,
+                admDur:    tData ? parseFloat(tData[3]) || 15 : 15
+              };
+            });
+
+            console.log('[afOpt] Phase 1.6 finie — ' + tourStates.length + ' tourStates');
+            if (!tourStates.length) {
+              _afOpt_updateProgress(1, '⚠️ Aucune tournée construite. Vérifiez cartographie et distancier.');
+              console.warn('[afOpt] Aucune tournée — non-placés :', groupesNonPlaces.length);
+              setTimeout(function() { _afOpt_hideOverlay(); }, 3000);
+              return;
+            }
+
+            // Phase 2 LNS désactivée : elle déplace les flux entre tourStates sans mettre à
+            // jour AppState.modules / _afOpt_storeSlots / les offsets, ce qui corrompt le
+            // placement issu de la Phase 1. On finalise directement avec les tourStates Phase 1.
+            _afOpt_updateProgress(0.90, 'Phase 3 — Résolution navettes…');
+            _afOpt_resolveNavettes(unplanned, tourStates, _opt_dm, _opt_jour);
+            _afOpt_updateProgress(1.00, 'Finalisation…');
+            _afOpt_finalizeAndRender(tourStates, _opt_dm, _opt_jour, groupesNonPlaces, _afOpt_cancelled);
+            return;
+          }
+
+          var g      = groupesTries[idx];
+          var result = _afOpt_placerGroupe(g, g.best, _opt_dm, _opt_jour);
+          if (!result.placed) {
+            groupesNonPlaces.push({ groupe: g, reason: result.reason });
+            unplanned = unplanned.concat(g.flux);
+          }
+          _afOpt_updateProgress(
+            0.30 + 0.20 * ((idx + 1) / groupesTries.length),
+            'Phase 1 — Placement ' + (idx + 1) + '/' + groupesTries.length
+          );
+          setTimeout(function() { placerChunk(idx + 1); }, 0);
+        } catch (e) {
+          _afOpt_hideOverlay();
+          console.error('[placerChunk] idx=' + idx, e);
+          afficherToast('❌ Erreur placement ' + idx + ' : ' + e.message, 'erreur');
+        }
+      };
+
+      placerChunk(0);
+    } catch (e) {
+      _afOpt_hideOverlay();
+      console.error('[lancerPlacement]', e);
+      afficherToast('❌ Erreur placement : ' + e.message, 'erreur');
+    }
+  };
+
+  // ── Chunk 2 : permutations (async, 1 groupe / tick) ───────────
+  var computeGroupsChunk = function(gi) {
+    try {
+      if (_afOpt_cancelled || Date.now() - _afOpt_startTime > _TIMEOUT_MS) {
+        for (var ri = gi; ri < _opt_groupes.length; ri++) {
+          _opt_groupesInvalides.push({
+            groupe: _opt_groupes[ri],
+            reason: _afOpt_cancelled ? 'cancelled' : 'timeout'
+          });
+        }
+        lancerPlacement();
+        return;
+      }
+      if (gi >= _opt_groupes.length) {
+        console.log('[afOpt] Permutations finies — valides:', _opt_groupesValides.length, 'invalides:', _opt_groupesInvalides.length);
+        lancerPlacement();
+        return;
+      }
+
+      var g    = _opt_groupes[gi];
+      var best = _afOpt_findBestPermutation(g, _opt_dm, _opt_jour);
+      if (best) { g.best = best; _opt_groupesValides.push(g); }
+      else       { _opt_groupesInvalides.push({ groupe: g, reason: 'permutation_invalide' }); }
+
+      _afOpt_updateProgress(
+        0.10 + 0.20 * ((gi + 1) / _opt_groupes.length),
+        'Phase 1 — Groupe ' + (gi + 1) + '/' + _opt_groupes.length
+      );
+      setTimeout(function() { computeGroupsChunk(gi + 1); }, 0);
+    } catch (e) {
+      _afOpt_hideOverlay();
+      console.error('[computeGroupsChunk] gi=' + gi, e);
+      afficherToast('❌ Erreur groupe ' + gi + ' : ' + e.message, 'erreur');
+    }
+  };
+
+  // ── Chunk 1 : Phase 0 + FFD (sync, ~30ms après affichage 1%) ──
   setTimeout(function() {
     try {
-
-      // ── Phase 0 — Initialisation ────────────────────────────
       _afOpt_cleanupPreviousRun();
       _afOpt_storeSlots      = {};
       _afOpt_modulesInternes = [];
       AppState.planLocal     = AppState.planLocal || {};
       AppState.shiftSplits   = {};
 
-      var dm   = _afOpt_buildDistMap();
-      var jour = AppState.jourActif;
+      _opt_dm   = _afOpt_buildDistMap();
+      _opt_jour = AppState.jourActif;
+      console.log('[afOpt] jour actif =', _opt_jour);
+      (function() {
+        var cartoBase  = AppState.cartographiePlages || {};
+        var magKeys    = Object.keys(cartoBase);
+        var firstMag   = magKeys[0];
+        var jourKeys   = firstMag ? Object.keys(cartoBase[firstMag] || {}) : [];
+        console.log('[afOpt] carto —', magKeys.length, 'magasins | jours trouvés :', jourKeys.join(', ') || '(aucun)');
+        console.log('[afOpt] distancier —', (AppState.distancierParsed || []).length, 'entrées | dm —', Object.keys(_opt_dm).length, 'clés');
+      })();
 
-      if (!jour) {
-        _afOpt_hideOverlay();
-        afficherToast('⚠️ Aucun jour actif sélectionné', 'avertissement');
+      if (!_opt_jour) {
+        _afOpt_updateProgress(1, '⚠️ Aucun jour actif sélectionné');
+        setTimeout(function() { _afOpt_hideOverlay(); }, 3000);
         return;
       }
 
-      var contextualSlots = _afOpt_phase0_extractContextualTournees(jour, dm);
+      var contextualSlots = _afOpt_phase0_extractContextualTournees(_opt_jour, _opt_dm);
       _afOpt_phase0_initStoreSlots(contextualSlots);
+      console.log('[afOpt] contextualSlots =', contextualSlots.length);
 
-      var fluxList = _afOpt_collectFlux(AppState.donnees, jour);
+      var fluxList = _afOpt_collectFlux(AppState.donnees, _opt_jour);
+      console.log('[afOpt] flux collectés =', fluxList.length, '(jour =', _opt_jour + ')');
+
       if (!fluxList.length) {
-        _afOpt_hideOverlay();
-        afficherToast('⚠️ Aucun flux à planifier', 'avertissement');
+        _afOpt_updateProgress(1, '⚠️ Aucun flux pour le jour « ' + _opt_jour + ' ». Vérifiez le jour actif et le fichier Excel.');
+        setTimeout(function() { _afOpt_hideOverlay(); }, 4000);
         return;
       }
 
-      _afOpt_updateProgress(0.05, 'Phase 1 — FFD groupement…');
+      _afOpt_updateProgress(0.05, 'Phase 1 — FFD groupement (' + fluxList.length + ' flux)…');
 
-      // ── Phase 1.1 + 1.2 — FFD + fractionnement ─────────────
-      var groupes = _afOpt_phase1_ffd(fluxList);
-      groupes     = _afOpt_phase1_fractionner(groupes, fluxList);
+      _opt_groupes         = _afOpt_phase1_ffd(fluxList);
+      _opt_groupes         = _afOpt_phase1_fractionner(_opt_groupes, fluxList);
+      _opt_groupesValides   = [];
+      _opt_groupesInvalides = [];
+      console.log('[afOpt] groupes FFD =', _opt_groupes.length);
 
-      _afOpt_updateProgress(0.10, 'Phase 1 — Permutations et intervalles…');
+      _afOpt_updateProgress(0.10, 'Phase 1 — Permutations (' + _opt_groupes.length + ' groupes)…');
 
-      // ── Phase 1.3 + 1.4 — Permutations ─────────────────────
-      var groupesValides   = [];
-      var groupesInvalides = [];
-      var TIMEOUT_MS       = 5 * 60 * 1000;
-
-      for (var gi = 0; gi < groupes.length; gi++) {
-        if (_afOpt_cancelled) break;
-        if (Date.now() - _afOpt_startTime > TIMEOUT_MS) {
-          for (var ri = gi; ri < groupes.length; ri++) {
-            groupesInvalides.push({ groupe: groupes[ri], reason: 'timeout' });
-          }
-          break;
-        }
-
-        var g    = groupes[gi];
-        var best = _afOpt_findBestPermutation(g, dm, jour);
-        if (best) {
-          g.best = best;
-          groupesValides.push(g);
-        } else {
-          groupesInvalides.push({ groupe: g, reason: 'permutation_invalide' });
-        }
-
-        _afOpt_updateProgress(
-          0.10 + 0.20 * ((gi + 1) / groupes.length),
-          'Phase 1 — Groupe ' + (gi + 1) + '/' + groupes.length
-        );
-      }
-
-      // ── Phase 1.5 — Tri des groupes ─────────────────────────
-      var groupesTries = _afOpt_trierGroupes(groupesValides);
-
-      _afOpt_updateProgress(0.30, 'Phase 1 — Placement dans les modules…');
-
-      var groupesNonPlaces = groupesInvalides.slice();
-      var unplanned        = [];
-
-      // ── Phase 1.6 — Placement itératif (chunked) ────────────
-      function placerChunk(idx) {
-        if (_afOpt_cancelled || idx >= groupesTries.length) {
-
-          // ── Construire tourStates pour le LNS ───────────────
-          var tourStates = _afOpt_autoCreatedTids.map(function(tid) {
-            var flux    = AppState.planLocal[tid] || [];
-            var modId   = null;
-            var offsetMin = 6 * 60;
-
-            AppState.modules.forEach(function(m) {
-              if (m.tours && m.tours.indexOf(tid) >= 0) {
-                modId = m.id;
-                var key = m.id + '_' + tid;
-                if (AppState.modulesOffsets[key] !== undefined) {
-                  offsetMin = AppState.modulesOffsets[key];
-                }
-              }
-            });
-
-            var tData = (AppState.tourneesLocales || []).filter(function(t) {
-              return String(t[0]) === tid;
-            })[0];
-
-            return {
-              tid:       tid,
-              modId:     modId,
-              entrepot:  tData ? tData[2] : 'ENTREPOT',
-              retour:    tData ? tData[2] : 'ENTREPOT',
-              flux:      flux,
-              offsetMin: offsetMin,
-              chgtDur:   tData ? parseFloat(tData[4]) || 30 : 30,
-              admDur:    tData ? parseFloat(tData[3]) || 15 : 15
-            };
-          });
-
-          if (!tourStates.length) {
-            _afOpt_hideOverlay();
-            afficherToast('⚠️ Aucune tournée construite', 'avertissement');
-            return;
-          }
-
-          var startCout = _afOpt_totalCout(tourStates, dm, jour);
-
-          _afOpt_updateProgress(0.50, 'Phase 2 — LNS en cours…');
-
-          // ── Phase 2 — LNS ───────────────────────────────────
-          _afOpt_phase2LNS(
-            tourStates, dm, jour, startCout,
-            function(pct) {
-              _afOpt_updateProgress(0.50 + pct * 0.40, 'Phase 2 — LNS itération…');
-            },
-            function(finalStates, wasCancelled) {
-
-              // ── Phase 3 — Navettes ───────────────────────────
-              _afOpt_updateProgress(0.90, 'Phase 3 — Résolution navettes…');
-              _afOpt_resolveNavettes(unplanned, finalStates, dm, jour);
-
-              // ── Finalisation ─────────────────────────────────
-              _afOpt_updateProgress(1.00, 'Finalisation…');
-              _afOpt_finalizeAndRender(
-                finalStates, dm, jour, groupesNonPlaces, wasCancelled
-              );
-            }
-          );
-          return;
-        }
-
-        // Placer le groupe courant
-        var g      = groupesTries[idx];
-        var result = _afOpt_placerGroupe(g, g.best, dm, jour);
-
-        if (!result.placed) {
-          groupesNonPlaces.push({ groupe: g, reason: result.reason });
-          unplanned = unplanned.concat(g.flux);
-        }
-
-        _afOpt_updateProgress(
-          0.30 + 0.20 * ((idx + 1) / groupesTries.length),
-          'Phase 1 — Placement ' + (idx + 1) + '/' + groupesTries.length
-        );
-
-        setTimeout(function() { placerChunk(idx + 1); }, 0);
-      }
-
-      placerChunk(0);
+      // Démarrer les permutations async (1 groupe / tick)
+      setTimeout(function() { computeGroupsChunk(0); }, 0);
 
     } catch (e) {
       _afOpt_hideOverlay();
-      console.error('[autoFillOptimise] Erreur critique :', e);
-      afficherToast('❌ Erreur : ' + e.message, 'erreur');
+      console.error('[autoFillOptimise] Phase 0 :', e);
+      afficherToast('❌ Erreur Phase 0 : ' + e.message, 'erreur');
     }
-
   }, 30);
 }
 
@@ -9157,6 +9473,17 @@ document.addEventListener('DOMContentLoaded', function() {
           delete AppState.modulesOffsets[bd.modId + '_' + bd.tid];
           tgtMod.tours.push(bd.tid);
           AppState.modulesOffsets[bd._targetModId + '_' + bd.tid] = newOff;
+          // Validation navettisation
+          var _nvViolInter = _validerContrainteNavettes();
+          if (_nvViolInter.length > 0) {
+            tgtMod.tours = tgtMod.tours.filter(function(t) { return t !== bd.tid; });
+            delete AppState.modulesOffsets[bd._targetModId + '_' + bd.tid];
+            srcMod.tours.push(bd.tid);
+            AppState.modulesOffsets[bd.modId + '_' + bd.tid] = bd.startOff;
+            afficherToast('🚫 Position invalide : navette arrive à ' + minutesVersHeure(Math.round(_nvViolInter[0].navetteFin)) + ', flux dérivé part à ' + minutesVersHeure(Math.round(_nvViolInter[0].deriveTractorStart)), 'erreur');
+            if (AppState.donnees) rendreGantt(AppState.donnees);
+            return;
+          }
         }
       } else {
         // ── Repositionnement dans le même module ──────────────
@@ -9167,6 +9494,14 @@ document.addEventListener('DOMContentLoaded', function() {
           return;
         }
         AppState.modulesOffsets[bd.modId + '_' + bd.tid] = newOff;
+        // Validation navettisation
+        var _nvViolRepo = _validerContrainteNavettes();
+        if (_nvViolRepo.length > 0) {
+          AppState.modulesOffsets[bd.modId + '_' + bd.tid] = bd.startOff;
+          afficherToast('🚫 Position invalide : navette arrive à ' + minutesVersHeure(Math.round(_nvViolRepo[0].navetteFin)) + ', flux dérivé part à ' + minutesVersHeure(Math.round(_nvViolRepo[0].deriveTractorStart)), 'erreur');
+          if (AppState.donnees) rendreGantt(AppState.donnees);
+          return;
+        }
       }
 
       if (AppState.donnees) rendreGantt(AppState.donnees);
