@@ -710,6 +710,23 @@
       background: none; border: none; padding: 0; line-height: 1;
     }
     .mod-del-btn:hover { color: #c5221f; }
+    .mod-transfer-btn { color: #F9A825 !important; font-size: 11px !important; top: auto !important; bottom: 6px; }
+    .mod-transfer-btn:hover { color: #fff !important; background: #F9A825 !important; border-radius: 2px; }
+    #atelier-transfer-popup {
+      position: fixed; z-index: 9999; background: #fff;
+      border: 1px solid #E0E0E0; border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.18); padding: 6px; min-width: 150px;
+    }
+    #atelier-transfer-popup .popup-title {
+      font-size: 10px; color: #90A4AE; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.5px; padding: 2px 6px 5px; border-bottom: 1px solid #ECEFF1; margin-bottom: 3px;
+    }
+    #atelier-transfer-popup button {
+      display: block; width: 100%; text-align: left; padding: 5px 8px;
+      font-size: 12px; font-weight: 600; background: none; border: none;
+      border-radius: 3px; cursor: pointer; color: #455A64;
+    }
+    #atelier-transfer-popup button:hover { background: #FFF3CD; color: #E65100; }
     .tour-pill { display: none; } /* supprimé — plus de pool manuel */
 
     /* ── Module sélectionné (pour le panel paramètres) ── */
@@ -1709,10 +1726,11 @@ function parserCartographieCsv(text) {
       }
 
       // Créneau normal (fin > debut) : pas de modification
-      // Cas spécial : créneau très tôt le matin (ex: 06:00→09:00) → debut < 6*60
-      // Ces créneaux appartiennent au lendemain dans le contexte 6h→6h.
+      // Cas spécial : créneau tôt le matin (ex: 06:00→09:00) → debut < 7h30 (450 min)
+      // Pour les magasins la journée redémarre à 7h30 (pas 6h comme pour les chargements).
+      // Ces créneaux appartiennent au lendemain dans le contexte 7h30→7h30.
       // On les décale de +24h pour les placer dans la bonne fenêtre temporelle.
-      if (d < 6 * 60) {
+      if (d < 7 * 60 + 30) {
         d += 24 * 60;
         f += 24 * 60;
       }
@@ -2230,20 +2248,8 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
       var trajLabel = '→ ' + lieu + (dt ? ' (' + dt + 'min)' : '');
       var _lieuPrecT = lieuPrec; // tracking position locale pour le détour chauffeur
       while (trajRestant > 0 || (mBreaks.length > 0 && mBreaks[0].at === curseur)) {
-        // Pause manuelle : injecter si dans la fenêtre courante du trajet (borne haute inclusive)
-        if (mBreaks.length > 0 && mBreaks[0].at >= curseur && mBreaks[0].at <= curseur + trajRestant) {
-          var mb = mBreaks.shift();
-          _injectedMBAt.push(mb.at);
-          var segBefore = mb.at - curseur;
-          if (segBefore > 0) {
-            driveMin += segBefore; serviceMin += segBefore;
-            blocs.push({ type:'trajet', debut:curseur, duree:segBefore, label:trajLabel, color:'#9E9E9E' });
-            curseur += segBefore; trajRestant -= segBefore;
-          }
-          hardBreak(mb.type, mb.dur || (mb.type === 'conduite' ? 45 : 30), mb);
-          continue;
-        }
         // Chauffeur split : dérouter par l'entrepôt de shift si le point de coupure est dans ce segment
+        // (avant les pauses manuelles pour éviter qu'elles avancent curseur au-delà de atMin)
         if (_csSplitsAll.length > 0) {
           var _csIdxT = -1;
           for (var _qi = 0; _qi < _csSplitsAll.length; _qi++) {
@@ -2267,6 +2273,19 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
             trajRestant = getDist(_csT.entrepot, lieu).m;
             continue;
           }
+        }
+        // Pause manuelle : injecter si dans la fenêtre courante du trajet (après split check)
+        if (mBreaks.length > 0 && mBreaks[0].at >= curseur && mBreaks[0].at <= curseur + trajRestant) {
+          var mb = mBreaks.shift();
+          _injectedMBAt.push(mb.at);
+          var segBefore = mb.at - curseur;
+          if (segBefore > 0) {
+            driveMin += segBefore; serviceMin += segBefore;
+            blocs.push({ type:'trajet', debut:curseur, duree:segBefore, label:trajLabel, color:'#9E9E9E' });
+            curseur += segBefore; trajRestant -= segBefore;
+          }
+          hardBreak(mb.type, mb.dur || (mb.type === 'conduite' ? 45 : 30), mb);
+          continue;
         }
         checkHardBreaks(); // pause immédiate si déjà à la limite avant de rouler
         var margeC = LIMITE_C - driveMin, margeS = LIMITE_S - serviceMin;
@@ -2330,20 +2349,7 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
       var retLabel = '→ Retour ' + effectiveRetour + (dtR ? ' (' + dtR + 'min)' : '');
       var _lieuPrecR = lieuPrec;
       while (retRestant > 0 || (mBreaks.length > 0 && mBreaks[0].at === curseur)) {
-        // Pause manuelle : injecter si dans la fenêtre courante du retour (borne haute inclusive)
-        if (mBreaks.length > 0 && mBreaks[0].at >= curseur && mBreaks[0].at <= curseur + retRestant) {
-          var mbR = mBreaks.shift();
-          _injectedMBAt.push(mbR.at);
-          var segRBefore = mbR.at - curseur;
-          if (segRBefore > 0) {
-            driveMin += segRBefore; serviceMin += segRBefore;
-            blocs.push({ type:'retour', debut:curseur, duree:segRBefore, label:retLabel, color:'#9E9E9E' });
-            curseur += segRBefore; retRestant -= segRBefore;
-          }
-          hardBreak(mbR.type, mbR.dur || (mbR.type === 'conduite' ? 45 : 30), mbR);
-          continue;
-        }
-        // Chauffeur split dans le retour
+        // Chauffeur split dans le retour (avant les pauses manuelles)
         if (_csSplitsAll.length > 0) {
           var _csIdxR = -1;
           for (var _qj = 0; _qj < _csSplitsAll.length; _qj++) {
@@ -2368,6 +2374,19 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
             continue;
           }
         }
+        // Pause manuelle : injecter si dans la fenêtre courante du retour (après split check)
+        if (mBreaks.length > 0 && mBreaks[0].at >= curseur && mBreaks[0].at <= curseur + retRestant) {
+          var mbR = mBreaks.shift();
+          _injectedMBAt.push(mbR.at);
+          var segRBefore = mbR.at - curseur;
+          if (segRBefore > 0) {
+            driveMin += segRBefore; serviceMin += segRBefore;
+            blocs.push({ type:'retour', debut:curseur, duree:segRBefore, label:retLabel, color:'#9E9E9E' });
+            curseur += segRBefore; retRestant -= segRBefore;
+          }
+          hardBreak(mbR.type, mbR.dur || (mbR.type === 'conduite' ? 45 : 30), mbR);
+          continue;
+        }
         checkHardBreaks();
         var margeC = LIMITE_C - driveMin, margeS = LIMITE_S - serviceMin;
         var marge  = Math.min(margeC > 0 ? margeC : Infinity, margeS > 0 ? margeS : Infinity);
@@ -2376,7 +2395,6 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
         blocs.push({ type:'retour', debut:curseur, duree:seg, label:retLabel, color:'#9E9E9E' });
         curseur   += seg;
         retRestant -= seg;
-        _lieuPrecR = effectiveRetour;
       }
       checkHardBreaks();
     }
@@ -3660,12 +3678,12 @@ function rendrePlanningFlux(data) {
   if (elTaux) elTaux.textContent = tauxCouv + '%';
 
   // 3 — Construction des blocs
-  var distList  = AppState.distancierParsed || [];
   var cartoPlag = AppState.cartographiePlages || {};
   var jourNom   = AppState.jourActif; // ex: "Lundi"
 
+  // Utiliser lireDistancierWb() pour bénéficier des alias (ENT IENA1/2, etc.)
   var distMap = {};
-  distList.forEach(function(d) { distMap[d.f + '_' + d.t] = d.m; });
+  lireDistancierWb().forEach(function(d) { distMap[d.f + '_' + d.t] = d.m; });
 
   function catPourMarc(marc) {
     var m = (marc || '').toUpperCase();
@@ -3673,25 +3691,19 @@ function rendrePlanningFlux(data) {
     if (m === 'FL' || m === 'PF') return 'frais';
     return 'sec';
   }
-  function premierCreneau(magasin, marc) {
+  function tousCreneaux(magasin, marc) {
     var plages = cartoPlag[magasin];
-    if (!plages || !jourNom) return null;
+    if (!plages || !jourNom) return [];
     var jourData = plages[jourNom];
-    if (!jourData) return null;
+    if (!jourData) return [];
     var cat = catPourMarc(marc);
     var slots = (jourData[cat] || []).slice();
     if (!slots.length) slots = (jourData.sec || []).concat(jourData.frais || [], jourData.surg || []);
-    if (!slots.length) return null;
-    // Les créneaux avant 6h sont décalés de +24h dans parsePlage pour les positionner
-    // dans la plage 24h–30h du repère 0h→34h ; on les utilise tels quels.
-    var minDebut = null;
-    slots.forEach(function(s) {
-      if (minDebut === null || s.debut < minDebut) minDebut = s.debut;
-    });
-    return minDebut;
+    // Les créneaux avant 6h sont déjà décalés de +24h dans parsePlage ; tri chronologique.
+    slots.sort(function(a, b) { return a.debut - b.debut; });
+    return slots;
   }
 
-  var TIMELINE_START = 6 * 60;  // 360 min
   var TIMELINE_END   = 30 * 60; // 1800 min (6h lendemain)
   var PPM = AppState.PPM || 2;
 
@@ -3717,14 +3729,49 @@ function rendrePlanningFlux(data) {
     if (estComplet) return;
 
     var travelMin = distMap[f.entrepot + '_' + f.magasin];
-    var firstSlot = premierCreneau(f.magasin, f.marchandise);
+    var _slots = tousCreneaux(f.magasin, f.marchandise);
 
-    if (travelMin == null || firstSlot == null) {
+    if (travelMin == null || !_slots.length) {
       unplaced.push({ flux: f, utAff: utAff });
       return;
     }
-    var dur        = travelMin + 30;
-    var blockEnd   = firstSlot + 15;
+    var dur = travelMin + 30;
+    // Départ >= 6h du jour de chargement (blockStart >= DEBUT_MIN = 360 min).
+    // Ordre : créneaux du jour courant (matin → soir), puis créneaux du lendemain (+24h).
+    // Aucun bloc ne peut déborder sur le jour de chargement précédent (blockStart < 360 interdit).
+    var DEBUT_MIN = 6 * 60;
+
+    // Phase 1 : créneaux du jour courant
+    var _chosen = null;
+    var _chosenBlockEnd = null;
+    for (var _si = 0; _si < _slots.length; _si++) {
+      var _s = _slots[_si];
+      var _sFinEff = _s.fin < _s.debut ? _s.fin + 24 * 60 : _s.fin;
+      var _minBE = Math.max(_s.debut + 15, DEBUT_MIN + dur);
+      if (_minBE <= _sFinEff) { _chosen = _s; _chosenBlockEnd = _minBE; break; }
+    }
+
+    // Phase 2 : créneaux du lendemain (+24h) — livraison après 6h du lendemain, départ >= 6h courant
+    if (!_chosen && jourNom) {
+      var _jourSuiv = getJourSuivant(jourNom);
+      var _cartoSuiv = _jourSuiv ? ((cartoPlag[f.magasin] || {})[_jourSuiv] || null) : null;
+      if (_cartoSuiv) {
+        var _catSuiv = catPourMarc(f.marchandise);
+        var _slotsSuiv = (_cartoSuiv[_catSuiv] || []).slice();
+        if (!_slotsSuiv.length) _slotsSuiv = (_cartoSuiv.sec || []).concat(_cartoSuiv.frais || [], _cartoSuiv.surg || []);
+        _slotsSuiv.sort(function(a, b) { return a.debut - b.debut; });
+        for (var _sj = 0; _sj < _slotsSuiv.length; _sj++) {
+          var _ss = _slotsSuiv[_sj];
+          var _ssFinEff = (_ss.fin < _ss.debut ? _ss.fin + 24 * 60 : _ss.fin) + 24 * 60;
+          var _ssDebut  = _ss.debut + 24 * 60;
+          var _ssBE     = Math.max(_ssDebut + 15, DEBUT_MIN + dur);
+          if (_ssBE <= _ssFinEff) { _chosen = _ss; _chosenBlockEnd = _ssBE; break; }
+        }
+      }
+    }
+
+    if (!_chosen) { unplaced.push({ flux: f, utAff: utAff }); return; }
+    var blockEnd   = _chosenBlockEnd;
     var blockStart = blockEnd - dur;
     placed.push({ flux: f, utAff: utAff, blockStart: blockStart, blockEnd: blockEnd, dur: dur });
   });
@@ -4741,6 +4788,112 @@ function supprimerModule(modId) {
   if (AppState.donnees) rendreGantt(AppState.donnees);
 }
 
+function _getModulesCompatiblesAtelier() {
+  var m0 = AppState.moduleM0;
+  if (!m0 || !m0.tours.length) return [];
+  var data = AppState.donnees;
+  var distMap = {};
+  lireDistancierWb().forEach(function(d) { distMap[d.f + '_' + d.t] = { km: d.km, m: d.m }; });
+
+  // Intervalles [start, end] des tournées de l'atelier avec leurs offsets actuels
+  var m0Ivs = m0.tours.map(function(tid) {
+    var off = AppState.modulesOffsets['M0_' + tid] !== undefined ? AppState.modulesOffsets['M0_' + tid] : 6 * 60;
+    return _computeTourneeInterval('M0', tid, off, data, distMap);
+  });
+
+  function overlap(a, b) { return a.start < b.end && b.start < a.end; }
+
+  return AppState.modules.filter(function(mod) {
+    if (!mod.tours.length) return true; // module vide : toujours compatible
+    // Intervalles des tournées déjà dans ce module
+    var modIvs = mod.tours.map(function(tid) {
+      var off = AppState.modulesOffsets[mod.id + '_' + tid] !== undefined ? AppState.modulesOffsets[mod.id + '_' + tid] : 6 * 60;
+      return _computeTourneeInterval(mod.id, tid, off, data, distMap);
+    });
+    // Incompatible si une tournée M0 chevauche une tournée du module cible
+    return !m0Ivs.some(function(iv0) {
+      return modIvs.some(function(ivM) { return overlap(iv0, ivM); });
+    });
+  });
+}
+
+function _executerTransfertAtelier(targetModId) {
+  var m0 = AppState.moduleM0;
+  var tgtMod = AppState.modules.filter(function(m) { return m.id === targetModId; })[0];
+  if (!tgtMod || !m0.tours.length) return;
+  var tours = m0.tours.slice();
+  tours.forEach(function(tid) {
+    var offset = AppState.modulesOffsets['M0_' + tid];
+    if (offset === undefined) offset = 6 * 60;
+    var idx = m0.tours.indexOf(tid);
+    if (idx >= 0) m0.tours.splice(idx, 1);
+    delete AppState.modulesOffsets['M0_' + tid];
+    tgtMod.tours.push(tid);
+    AppState.modulesOffsets[targetModId + '_' + tid] = offset;
+    var oldPauseKey = 'M0_' + tid;
+    var newPauseKey = targetModId + '_' + tid;
+    if (AppState.pauseOverrides && AppState.pauseOverrides[oldPauseKey]) {
+      AppState.pauseOverrides[newPauseKey] = AppState.pauseOverrides[oldPauseKey];
+      delete AppState.pauseOverrides[oldPauseKey];
+    }
+  });
+  if (AppState.shiftSplits && AppState.shiftSplits['M0'] && AppState.shiftSplits['M0'].length) {
+    if (!AppState.shiftSplits[targetModId]) AppState.shiftSplits[targetModId] = [];
+    AppState.shiftSplits['M0'].forEach(function(tid) {
+      if (AppState.shiftSplits[targetModId].indexOf(tid) < 0)
+        AppState.shiftSplits[targetModId].push(tid);
+    });
+    AppState.shiftSplits['M0'] = [];
+  }
+  _autoSave();
+  if (AppState.donnees) {
+    rendreGantt(AppState.donnees);
+    if (AppState.vueActive === 'remorques') rendreGanttRemorques(AppState.donnees);
+    if (AppState.vueActive === 'magasins') rendreGanttMagasins(AppState.donnees);
+  }
+  afficherToast('✅ ' + tours.length + ' tournée' + (tours.length > 1 ? 's' : '') +
+    ' transférée' + (tours.length > 1 ? 's' : '') + ' vers ' + targetModId, 'succes');
+}
+
+function transfererAtelier(btn) {
+  var old = document.getElementById('atelier-transfer-popup');
+  if (old) { old.remove(); return; }
+  var m0 = AppState.moduleM0;
+  if (!m0 || !m0.tours.length) {
+    afficherToast('⚠️ L\'atelier ne contient aucune tournée.', 'info');
+    return;
+  }
+  var compatibles = _getModulesCompatiblesAtelier();
+  if (!compatibles.length) {
+    afficherToast('⚠️ Aucun module compatible — les magasins de l\'atelier sont déjà présents dans d\'autres modules.', 'erreur');
+    return;
+  }
+  var popup = document.createElement('div');
+  popup.id = 'atelier-transfer-popup';
+  var title = document.createElement('div');
+  title.className = 'popup-title';
+  title.textContent = 'Transférer vers';
+  popup.appendChild(title);
+  compatibles.forEach(function(mod) {
+    var nbT = mod.tours.length;
+    var btnMod = document.createElement('button');
+    btnMod.textContent = mod.id + (nbT ? ' (' + nbT + ' rem.)' : ' — vide');
+    btnMod.addEventListener('click', function() { popup.remove(); _executerTransfertAtelier(mod.id); });
+    popup.appendChild(btnMod);
+  });
+  var rect = btn.getBoundingClientRect();
+  popup.style.left = rect.left + 'px';
+  popup.style.top  = (rect.bottom + 4) + 'px';
+  document.body.appendChild(popup);
+  function closePopup(e) {
+    if (!popup.contains(e.target) && e.target !== btn) {
+      popup.remove();
+      document.removeEventListener('mousedown', closePopup);
+    }
+  }
+  setTimeout(function() { document.addEventListener('mousedown', closePopup); }, 0);
+}
+
 function assignerTourneeModule(modId, tid, offsetMin) {
   var _allMods = [AppState.moduleM0].concat(AppState.modules);
   _allMods.forEach(function(m) {
@@ -5028,9 +5181,9 @@ function _onCisailleClick(segEl, e) {
 
 function _inserterChangementChauffeur(modId, tid, atMin, entrepot) {
   var key = modId + '_' + tid;
-  if (!AppState.chauffeurSplits[key]) AppState.chauffeurSplits[key] = [];
-  var tooClose = AppState.chauffeurSplits[key].some(function(cs) { return Math.abs(cs.atMin - atMin) < 15; });
-  if (!tooClose) AppState.chauffeurSplits[key].push({ atMin: atMin, entrepot: entrepot, _id: 'cs_' + tid + '_' + atMin });
+  // Remplace tout split existant pour ce tracteur — évite les splits fantômes accumulés
+  // si l'utilisateur clique sur le petit puis le grand morceau d'un même segment pausé
+  AppState.chauffeurSplits[key] = [{ atMin: atMin, entrepot: entrepot, _id: 'cs_' + tid + '_' + atMin }];
   if (AppState.donnees) rendreGantt(AppState.donnees);
 }
 
@@ -5435,6 +5588,12 @@ function rendreGantt(data) {
         '<span id="lbl-fin-M0" style="font-size:9px;color:#B71C1C">→ fin —</span>' +
         '<span id="lbl-shifts-M0"></span>' +
         '<span style="font-size:9px;color:#F9A825;font-style:italic">Construction</span>';
+      var _btnTrf = document.createElement('button');
+      _btnTrf.className = 'mod-del-btn mod-transfer-btn';
+      _btnTrf.title = 'Transférer le contenu de l\'atelier vers un module';
+      _btnTrf.textContent = '→';
+      _btnTrf.addEventListener('click', function(e) { e.stopPropagation(); transfererAtelier(_btnTrf); });
+      lbl.appendChild(_btnTrf);
     } else {
       lbl.innerHTML =
         '<strong style="font-size:13px;color:#7F0000">' + mod.id + '</strong>' +
@@ -6011,6 +6170,8 @@ function rendreGantt(data) {
           _ccMarker.textContent = '✂ ' + bloc.entrepot;
           bar.appendChild(_ccMarker);
           segEl.setAttribute('data-gtip', bloc.label + '\nDouble-clic pour supprimer');
+          // Stopper la propagation sur mousedown pour éviter la race condition avec _barDragState
+          segEl.addEventListener('mousedown', function(e) { e.stopPropagation(); });
           (function(mId, tId, bSplitId, el) {
             el.addEventListener('mouseover', function(e) { _showGanttTip(e, el.getAttribute('data-gtip')); });
             el.addEventListener('mousemove', _moveGanttTip);
@@ -9893,14 +10054,16 @@ function rendreGanttMagasins(data) {
         fdRed.style.left = '0'; fdRed.style.right = '0';
         contenu.appendChild(fdRed);
         plagesG.forEach(function(pl) {
+          // Créneau à cheval sur minuit (fin < debut) : la fin réelle est fin + 24h dans la timeline étendue
+          var finEff = pl.fin < pl.debut ? pl.fin + 24 * 60 : pl.fin;
           // Plages avant 7h30 appartiennent au lendemain de la journée de réception → +24h
           var shiftPl = pl.debut < PIVOT_DEB ? 24 * 60 : 0;
           var ouvDiv = document.createElement('div');
           ouvDiv.className = 'mag-plage-ouv';
           ouvDiv.style.left  = ((pl.debut + shiftPl - debutMin) * PPM) + 'px';
-          ouvDiv.style.width = Math.max((pl.fin - pl.debut) * PPM, 2) + 'px';
+          ouvDiv.style.width = Math.max((finEff - pl.debut) * PPM, 2) + 'px';
           contenu.appendChild(ouvDiv);
-          [{ t: pl.debut, ouv: true }, { t: pl.fin, ouv: false }].forEach(function(pt) {
+          [{ t: pl.debut, ouv: true }, { t: finEff, ouv: false }].forEach(function(pt) {
             var mk = document.createElement('div');
             mk.className = 'mag-marker-ouv';
             mk.style.left = ((pt.t + shiftPl - debutMin) * PPM) + 'px';
@@ -9916,8 +10079,9 @@ function rendreGanttMagasins(data) {
 
         // Plages du lendemain (+24h) — fenêtre PIVOT_FIN → finH*60
         plagesNextG.forEach(function(pl) {
+          var finEff   = pl.fin < pl.debut ? pl.fin + 24 * 60 : pl.fin;
           var posStart = pl.debut + 24 * 60;
-          var posEnd   = pl.fin   + 24 * 60;
+          var posEnd   = finEff  + 24 * 60;
           if (posEnd <= PIVOT_FIN || posStart >= finH * 60) return;
           var oDiv = document.createElement('div');
           oDiv.className = 'mag-plage-ouv mag-plage-ctx';
@@ -9937,8 +10101,9 @@ function rendreGanttMagasins(data) {
 
         // Plages de la veille (−24h) — fenêtre debutMin → PIVOT_DEB
         plagesPrevG.forEach(function(pl) {
+          var finEff   = pl.fin < pl.debut ? pl.fin + 24 * 60 : pl.fin;
           var posStart = pl.debut - 24 * 60;
-          var posEnd   = pl.fin   - 24 * 60;
+          var posEnd   = finEff  - 24 * 60;
           if (posEnd <= debutMin || posStart >= PIVOT_DEB) return;
           var oDiv = document.createElement('div');
           oDiv.className = 'mag-plage-ouv mag-plage-ctx';
