@@ -7,7 +7,7 @@
   <title>Outil de Planification Transport — Auchan</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', Arial, sans-serif; background: #F0F4F8; color: #212121; min-height: 100vh; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #F0F4F8; color: #212121; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
 
     /* LOADING OVERLAY */
     #loading-overlay {
@@ -36,9 +36,9 @@
       color: #fff; padding: 0 20px; height: 56px;
       display: flex; align-items: center; gap: 16px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-      position: sticky; top: 0; z-index: 200;
+      flex-shrink: 0; z-index: 200;
     }
-    #header h1 { font-size: 16px; font-weight: 700; }
+    #header h1, #header h2 { font-size: 16px; font-weight: 700; margin: 0; }
     #header .header-sub { font-size: 11px; color: #FFCDD2; margin-left: 4px; }
     .header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
@@ -47,11 +47,12 @@
       background: #fff; border-bottom: 1px solid #E0E0E0;
       padding: 6px 16px; display: flex;
       align-items: center; gap: 8px; flex-wrap: wrap;
+      flex-shrink: 0;
     }
     #toolbar-left  { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
     #toolbar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-left: auto; }
     #autosave-badge { display:none; font-size:10px; font-weight:700; color:#388E3C; background:#E8F5E9; border:1px solid #A5D6A7; border-radius:3px; padding:2px 7px; white-space:nowrap; cursor:default; }
-    #autosave-restore-banner { display:none; background:#FFF8E1; border-bottom:2px solid #FFE082; padding:7px 16px; font-size:12px; font-weight:500; color:#5D4037; align-items:center; gap:10px; }
+    #autosave-restore-banner { display:none; background:#FFF8E1; border-bottom:2px solid #FFE082; padding:7px 16px; font-size:12px; font-weight:500; color:#5D4037; align-items:center; gap:10px; flex-shrink:0; }
     #autosave-restore-banner button { font-size:11px; padding:3px 10px; border-radius:3px; border:none; cursor:pointer; font-weight:600; }
     #autosave-restore-banner .btn-restore { background:#4CAF50; color:#fff; }
     #autosave-restore-banner .btn-ignore  { background:#E0E0E0; color:#555; }
@@ -84,7 +85,9 @@
     #main {
       display: grid;
       grid-template-columns: 1fr 360px;
-      height: calc(100vh - 56px - 50px);
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
     }
     #left-content { display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
 
@@ -284,6 +287,20 @@
       border-left: 1px dashed rgba(13,71,161,0.25);
       border-right: 1px dashed rgba(13,71,161,0.25);
       pointer-events: none; z-index: 0;
+    }
+    .gantt-plage-fermee {
+      position: absolute; top: 0; bottom: 0;
+      background: repeating-linear-gradient(-45deg,
+        rgba(80,80,80,0.12) 0px, rgba(80,80,80,0.12) 5px,
+        rgba(80,80,80,0.04) 5px, rgba(80,80,80,0.04) 10px);
+      border-left: 2px solid rgba(80,80,80,0.3);
+      border-right: 2px solid rgba(80,80,80,0.3);
+      pointer-events: none; z-index: 1;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .gantt-fermee-label {
+      font-size: 10px; font-weight: 700; color: rgba(80,80,80,0.45);
+      text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap;
     }
     .gantt-bloc {
       position: absolute; top: 8px; height: 32px;
@@ -558,7 +575,7 @@
       flex: 1; position: relative; min-height: 90px; overflow: visible;
     }
     #panel-remorques-bilan {
-      width: 280px; min-width: 280px; background: #FAFAFA;
+      width: 360px; min-width: 360px; background: #FAFAFA;
       border-left: 1px solid #E0E0E0; overflow-y: auto;
       display: flex; flex-direction: column;
       grid-column: 2; grid-row: 1;
@@ -1088,7 +1105,7 @@
   <img src="logo.svg"     alt="Auchan"
      style="height: 18px; width:auto; object-fit:contain; filter:brightness(0) invert(1);">
   <div>
-    <h1>Outil de Planification Transport</h1>
+    <h2>Outil de Planification Transport</h2>
     <span class="header-sub">Auchan — Région Nord</span>
   </div>
   <div class="header-actions">
@@ -1177,7 +1194,7 @@
     <div class="toolbar-group">
       <button class="btn btn-secondary" onclick="ouvrirModalNavette()" title="Créer une navette à vide (déplacement tracteur sans marchandises)">↔ Navette à vide</button>
       <a class="btn btn-secondary" href="https://distancierinteractif-aakqowxsbgejq5w22rkvcz.streamlit.app/" target="_blank" rel="noopener">🗺 Distancier interactif</a>
-      <a class="btn btn-secondary" href="https://aideoutilplanification-z3ej5vge9hqkofwcnwfdgu.streamlit.app/" target="_blank" rel="noopener">Aide</a>
+      <a class="btn btn-secondary" href="https://aribert-ux.github.io/Aide_outil_planification/" target="_blank" rel="noopener">Aide</a>
     </div>
   </div>
   <!-- ── Actions (droite) ── -->
@@ -1283,7 +1300,7 @@
 
   <!-- Panel bilan remorques (droite, visible sur vue remorques) -->
   <div id="panel-remorques-bilan" class="panel-hidden">
-    <div class="rb-header">🚛 Bilan remorques</div>
+    <div class="pt-header">🚛 Bilan remorques</div>
     <div id="panel-remorques-bilan-contenu">
       <div style="color:#90A4AE;font-size:12px;padding:16px;text-align:center">—</div>
     </div>
@@ -2111,6 +2128,7 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
   var mBreaks            = (manualBreaks || []).slice().sort(function(a,b){ return a.at - b.at; });
   var _injectedMBAt      = []; // positions des manualBreaks réellement injectés
   var lastNavetteDest    = null; // dernier arret navette → décrochage à destination
+  var lastNavetteUT      = 0;    // UT transportées par la dernière navette (décrochage = déchargement)
   // Liste partagée des splits chauffeur restant à consommer — initialisée UNE SEULE FOIS
   // (ne pas re-déclarer dans le forEach sinon chaque arret repart avec la liste complète)
   var _csSplitsAll       = (_chauffeurSplits || []).slice();
@@ -2301,7 +2319,7 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
     }
 
     // Navette : transit seul — pas de déchargement ni de bloc livraison
-    if (arret.isNavette) { lastNavetteDest = lieuPrec = lieu || lieuPrec; return; }
+    if (arret.isNavette) { lastNavetteUT = parseFloat(arret.utAffecte !== undefined ? arret.utAffecte : (arret.ut || 0)); lastNavetteDest = lieuPrec = lieu || lieuPrec; return; }
     lastNavetteDest = null; // arret normal → réinitialiser
 
     // Livraison : service uniquement, pause parallèle possible si livraison assez longue
@@ -2401,9 +2419,10 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
     }
 
     if (hookDur > 0) {
-      serviceMin += hookDur; // décrochage = service
-      blocs.push({ type:'deccrochage', debut:curseur, duree:hookDur, label:'Décrochage — ' + effectiveRetour, destination: effectiveRetour, color:'#607D8B' });
-      curseur += hookDur;
+      var decrochDur = (lastNavetteDest && lastNavetteUT > 0) ? tD(lastNavetteUT) : hookDur;
+      serviceMin += decrochDur; // décrochage = service
+      blocs.push({ type:'deccrochage', debut:curseur, duree:decrochDur, label:'Décrochage — ' + effectiveRetour, destination: effectiveRetour, color:'#607D8B' });
+      curseur += decrochDur;
     }
   }
 
@@ -2906,6 +2925,9 @@ function getZoneEntrepot(entrepot) {
 var JOURS_SEMAINE = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
 function getJourPrecedent(j) { var i=JOURS_SEMAINE.indexOf(j); return i>=0?JOURS_SEMAINE[(i+6)%7]:null; }
 function getJourSuivant(j)   { var i=JOURS_SEMAINE.indexOf(j); return i>=0?JOURS_SEMAINE[(i+1)%7]:null; }
+// Samedi et Dimanche partagent le même jour de chargement — normalisation pour comparaisons de jour
+function _jMat(j)    { return j === 'Dimanche' ? 'Samedi' : j; }
+function _isSamDim(j){ return j === 'Samedi' || j === 'Dimanche'; }
 
 // ── Niveaux de zoom — PPM=2 = 100%, palier 0.25–4 ──
 var ZOOM_LEVELS = [0.5, 1, 2, 3, 4];
@@ -3389,7 +3411,7 @@ function rendreFiltresFlux(data) {
   }).concat(AppState.fluxLocaux);
 
   // Peupler les panneaux multi-select dynamiques selon le jour
-  var tousJour = tousFlux.filter(function(f) { return !jour || f.jour === jour; });
+  var tousJour = tousFlux.filter(function(f) { return !jour || _jMat(f.jour) === _jMat(jour); });
   [['magasin','magasin'],['entrepot','entrepot'],['zoneLog','zoneEntrepot'],['zoneLiv','zoneLivraison']].forEach(function(pair) {
     var key = pair[0], dataKey = pair[1];
     var vals = {};
@@ -3400,7 +3422,7 @@ function rendreFiltresFlux(data) {
   updateMsBtn('marchandise');
 
   var filtres = tousFlux.filter(function(f) {
-    var okJour     = !jour                              || f.jour === jour;
+    var okJour     = !jour                              || _jMat(f.jour) === _jMat(jour);
     var okMarc     = !Object.keys(selMarc).length       || selMarc[f.marchandise];
     var okMag      = !Object.keys(selMag).length        || selMag[f.magasin];
     var okEntrepot = !Object.keys(selEntr).length       || selEntr[f.entrepot];
@@ -3632,7 +3654,7 @@ function rendrePlanningFlux(data) {
   }).concat(AppState.fluxLocaux || []);
 
   // Peupler les dropdowns multi-select (uniquement si pas encore peuplés par rendreFiltresFlux)
-  var tousJour = tousFlux.filter(function(f) { return !jour || f.jour === jour; });
+  var tousJour = tousFlux.filter(function(f) { return !jour || _jMat(f.jour) === _jMat(jour); });
   [['magasin','magasin'],['entrepot','entrepot'],['zoneLog','zoneEntrepot'],['zoneLiv','zoneLivraison']].forEach(function(pair) {
     var key = pair[0], dataKey = pair[1];
     var vals = {};
@@ -3642,7 +3664,7 @@ function rendrePlanningFlux(data) {
   updateMsBtn('marchandise');
 
   var filtres = tousFlux.filter(function(f) {
-    var okJour     = !jour                              || f.jour === jour;
+    var okJour     = !jour                              || _jMat(f.jour) === _jMat(jour);
     var okMarc     = !Object.keys(selMarc).length       || selMarc[f.marchandise];
     var okMag      = !Object.keys(selMag).length        || selMag[f.magasin];
     var okEntrepot = !Object.keys(selEntr).length       || selEntr[f.entrepot];
@@ -3695,12 +3717,15 @@ function rendrePlanningFlux(data) {
   function tousCreneaux(magasin, marc) {
     var plages = cartoPlag[magasin];
     if (!plages || !jourNom) return [];
-    var jourData = plages[jourNom];
+    var jourData = plages[_jMat(jourNom)];
     if (!jourData) return [];
     var cat = catPourMarc(marc);
     var slots = (jourData[cat] || []).slice();
     if (!slots.length) slots = (jourData.sec || []).concat(jourData.frais || [], jourData.surg || []);
-    // Les créneaux avant 6h sont déjà décalés de +24h dans parsePlage ; tri chronologique.
+    // Samedi  : fenêtre 7h30-22h  → exclure créneaux décalés (>= 1440 = lundi matin après fermeture).
+    // Dimanche: fenêtre 22h-7h30  → exclure créneaux diurnes  (< 1440 = samedi journée / fermeture).
+    if (jourNom === 'Samedi')   slots = slots.filter(function(pl) { return pl.debut < 24 * 60; });
+    if (jourNom === 'Dimanche') slots = slots.filter(function(pl) { return pl.debut >= 24 * 60; });
     slots.sort(function(a, b) { return a.debut - b.debut; });
     return slots;
   }
@@ -3737,10 +3762,8 @@ function rendrePlanningFlux(data) {
       return;
     }
     var dur = travelMin + 30;
-    // Départ >= 6h du jour de chargement (blockStart >= DEBUT_MIN = 360 min).
-    // Ordre : créneaux du jour courant (matin → soir), puis créneaux du lendemain (+24h).
-    // Aucun bloc ne peut déborder sur le jour de chargement précédent (blockStart < 360 interdit).
-    var DEBUT_MIN = 6 * 60;
+    // Départ >= 6h du jour courant (22h pour Dimanche — fenêtre Sam.22h→Lun.7h30).
+    var DEBUT_MIN = (jourNom === 'Dimanche') ? 22 * 60 : 6 * 60;
 
     // Phase 1 : créneaux du jour courant
     var _chosen = null;
@@ -4480,7 +4503,7 @@ function _calculerUtAffectee(flux, jour) {
   Object.keys(AppState.planLocal || {}).forEach(function(tId) {
     if (jour) {
       var tData = getTourneeData(tId, AppState.donnees);
-      if (!tData || (tData[7] || '') !== jour) return;
+      if (!tData || _jMat(tData[7] || '') !== _jMat(jour)) return;
     }
     (AppState.planLocal[tId] || []).forEach(function(pf) {
       if (pf.magasin === flux.magasin && pf.marchandise === flux.marchandise &&
@@ -5504,7 +5527,15 @@ function rendreGantt(data) {
   var distMapGantt = {}, reglesDechGantt = [];
   lireDistancierWb().forEach(function(d) { distMapGantt[d.f+'_'+d.t] = {km:d.km, m:d.m}; });
 
-  var plagesNuit = [{debut:0,fin:6},{debut:22,fin:30}];
+  var _ganttSamDim = _isSamDim(jour);
+  var plagesNuit = _ganttSamDim
+    ? (jour === 'Samedi' ? [{debut:0,fin:6}] : [])
+    : [{debut:0,fin:6},{debut:22,fin:30}];
+  var _fermetureGantt = _ganttSamDim
+    ? (jour === 'Samedi'
+        ? {debut:22, fin:30, label:'Fermé — Sam.22h / Dim.22h'}
+        : {debut:0,  fin:22, label:'Fermé — Sam.22h / Dim.22h'})
+    : null;
 
   // Ligne d'échelle
   var echelleDiv = document.createElement('div');
@@ -5623,6 +5654,19 @@ function rendreGantt(data) {
       pDiv.style.width = ((p.fin - p.debut) * 60 * PPM) + 'px';
       track.appendChild(pDiv);
     });
+
+    if (_fermetureGantt) {
+      var fDiv = document.createElement('div');
+      fDiv.className = 'gantt-plage-fermee';
+      fDiv.title = 'Fermeture : Samedi 22h → Dimanche 22h';
+      fDiv.style.left  = ((_fermetureGantt.debut - debutH) * 60 * PPM) + 'px';
+      fDiv.style.width = ((_fermetureGantt.fin - _fermetureGantt.debut) * 60 * PPM) + 'px';
+      var fLbl = document.createElement('span');
+      fLbl.className = 'gantt-fermee-label';
+      fLbl.textContent = _fermetureGantt.label;
+      fDiv.appendChild(fLbl);
+      track.appendChild(fDiv);
+    }
 
     if (hasCtx) {
       // Zone veille : 0h→6h du jour courant (où les shifts de la veille finissent)
@@ -6064,13 +6108,17 @@ function rendreGantt(data) {
               // ── Surlignage vert : plages d'ouverture du magasin ──
               var cartoPlag = AppState.cartographiePlages || {};
               var jourNomHL = AppState.jourActif;
-              var jourData  = (cartoPlag[magNomHL] || {})[jourNomHL] || null;
+              var jourData  = (cartoPlag[magNomHL] || {})[_jMat(jourNomHL)] || null;
               if (jourData) {
                 var cat   = catPourMarcHL(marcHL);
                 var slots = (jourData[cat] || []).slice();
                 if (!slots.length) {
                   slots = (jourData.sec || []).concat(jourData.frais || [], jourData.surg || []);
                 }
+                // Samedi  : fenêtre 7h30-22h  → masquer créneaux décalés (>= 1440 = lundi matin).
+                // Dimanche: fenêtre 22h-7h30  → masquer créneaux diurnes  (< 1440 = samedi journée).
+                if (jourNomHL === 'Samedi')   slots = slots.filter(function(s) { return s.debut < 24 * 60; });
+                if (jourNomHL === 'Dimanche') slots = slots.filter(function(s) { return s.debut >= 24 * 60; });
                 slots.forEach(function(s) {
                   var dS = s.debut;
                   var dE = s.fin < s.debut ? s.fin + 1440 : s.fin;
@@ -6527,7 +6575,7 @@ function detecterConflitsGantt() {
   var cartoPlag = AppState.cartographiePlages || {};
   var jourActif = AppState.jourActif;
   segs.forEach(function(s) {
-    var jourData = (cartoPlag[s.mag] || {})[jourActif] || null;
+    var jourData = (cartoPlag[s.mag] || {})[_jMat(jourActif)] || null;
     if (!jourData) return; // cartographie absente pour ce magasin — on ne signale rien
     var cat = s.marc === 'SURG' ? 'surg' : (s.marc === 'FL' || s.marc === 'PF') ? 'frais' : 'sec';
     var slots = (jourData[cat] || []).slice();
@@ -7084,9 +7132,9 @@ function _afOpt_getCartoCreneau(magasin, jour, marchandise) {
   var cartoBase = AppState.cartographiePlages || {};
   var magData   = cartoBase[magasin];
   if (!magData) return [];
-  var jourData = magData[jour];
+  var jourData = magData[_jMat(jour)];
   if (!jourData) {
-    var jourLower = (jour || '').toLowerCase();
+    var jourLower = (_jMat(jour) || '').toLowerCase();
     var keys = Object.keys(magData);
     for (var ki = 0; ki < keys.length; ki++) {
       if (keys[ki].toLowerCase() === jourLower) { jourData = magData[keys[ki]]; break; }
@@ -7104,7 +7152,7 @@ function _afOpt_getCartoCreneau(magasin, jour, marchandise) {
 
 function _afOpt_collectFlux(donnees, jour) {
   var result = [];
-  var jourLower = (jour || '').toLowerCase();
+  var jourLower = (_jMat(jour) || '').toLowerCase();
   var rows = (donnees && donnees.flux) ? donnees.flux.slice(1) : [];
   rows.forEach(function(row) {
     if (!row) return;
@@ -9753,7 +9801,7 @@ function rendreGanttMagasins(data) {
   var PIVOT_DEB = isSunday ? -2 * 60  : 7.5 * 60;   // début journée en min depuis minuit
   var PIVOT_FIN = isSunday ? 22 * 60  : 31.5 * 60;  // fin journée (PIVOT_DEB + 24h)
   var debutH    = isSunday ? (hasCtx ? -4 : 0) : 5; // première heure affichée
-  var finH      = isSunday ? (hasCtx ? 25 : 24) : (hasCtx ? 35 : 32);
+  var finH      = isSunday ? (hasCtx ? 32 : 30) : (hasCtx ? 35 : 32);
   var debutMin  = debutH * 60;
   var largeur   = (finH - debutH) * 60 * PPM;
 
@@ -9783,17 +9831,21 @@ function rendreGanttMagasins(data) {
       var isFraisMag = flux.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase()) >= 0; });
       var tractorStartMag = isFraisMag ? (offset + chgtDur + admDur) : (offset + admDur);
       var blocs   = calculerPlanningGantt(tractorStartMag, flux, distMapMag, reglesDechMag, retour, admDur, lieuDep);
+      var _lastArret = null;
       blocs.forEach(function(b) {
-        if (b.type !== 'livraison' || !b.arret) return;
+        if (b.type === 'livraison' && b.arret) _lastArret = b.arret;
+        if (b.type !== 'livraison' && b.type !== 'emballage') return;
+        var arret = b.arret || _lastArret;
+        if (!arret) return;
         var posMin = b.debut + shift;
         // Ne conserver que les blocs visibles dans la fenêtre d'affichage
         if (posMin + b.duree <= debutMin || posMin >= finH * 60) return;
         // Pour les jours contexte, restreindre à leur fenêtre dédiée
         if (shift === -24 * 60 && posMin >= PIVOT_DEB) return;
         if (shift === +24 * 60 && posMin < PIVOT_FIN)  return;
-        var mag = b.arret.magasin || b.arret.lieu || '?';
+        var mag = arret.magasin || arret.lieu || '?';
         if (!magMap[mag]) magMap[mag] = [];
-        magMap[mag].push({ tourneeId: tid, bloc: b, shift: shift, isCtx: shift !== 0 });
+        magMap[mag].push({ tourneeId: tid, bloc: b, shift: shift, isCtx: shift !== 0, _arret: arret });
       });
       prevRet = retour;
     });
@@ -9834,12 +9886,16 @@ function rendreGanttMagasins(data) {
     var isFraisFb = flux.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase()) >= 0; });
     var tractorStartFb = isFraisFb ? (offset + chgtDur + admDur) : (offset + admDur);
     var blocs   = calculerPlanningGantt(tractorStartFb, flux, distMapMag, reglesDechMag, retour, admDur, lieuDep);
+    var _lastArretFb = null;
     blocs.forEach(function(b) {
-      if (b.type !== 'livraison' || !b.arret) return;
+      if (b.type === 'livraison' && b.arret) _lastArretFb = b.arret;
+      if (b.type !== 'livraison' && b.type !== 'emballage') return;
+      var arret = b.arret || _lastArretFb;
+      if (!arret) return;
       if (b.debut + b.duree <= debutMin || b.debut >= finH * 60) return;
-      var mag = b.arret.magasin || b.arret.lieu || '?';
+      var mag = arret.magasin || arret.lieu || '?';
       if (!magMap[mag]) magMap[mag] = [];
-      magMap[mag].push({ tourneeId: tid, bloc: b, shift: 0, isCtx: false });
+      magMap[mag].push({ tourneeId: tid, bloc: b, shift: 0, isCtx: false, _arret: arret });
     });
   });
 
@@ -9913,9 +9969,10 @@ function rendreGanttMagasins(data) {
   }
 
   var plagesNuit = isSunday
-    ? [ { debut: debutH,   fin: pivotDebH },   // avant sam. 22h (veille ctx)
-        { debut: pivotFinH, fin: finH      } ]  // après dim. 22h (lendemain ctx)
-    : [ { debut: debutH,   fin: 7.5       },   // avant 7h30 (veille ctx)
+    ? [ { debut: debutH,    fin: pivotDebH },   // avant sam. 22h (transition)
+        { debut: pivotDebH, fin: pivotFinH },   // fermeture sam.22h → dim.22h
+        { debut: 31.5,      fin: finH      } ]  // après lun. 7h30 (ctx lendemain)
+    : [ { debut: debutH,    fin: 7.5       },   // avant 7h30 (veille ctx)
         { debut: 22,        fin: 31.5      },   // nuit
         { debut: 31.5,      fin: finH      } ]; // après 31h30 (lendemain ctx)
 
@@ -9957,9 +10014,21 @@ function rendreGanttMagasins(data) {
     var livs     = magMap[mag];
     var coulMag  = getCouleurLieu(mag);
     var cartoBase  = AppState.cartographiePlages[mag] || {};
-    var cartoJour  = cartoBase[AppState.jourActif] || null;
+    var cartoJour;
+    if (isSunday) {
+      // Pour Dimanche, seuls les créneaux sam. décalés (>= minuit = lundi matin) sont actifs.
+      var _samB = cartoBase['Samedi'];
+      if (_samB) {
+        cartoJour = {};
+        ['sec','frais','surg'].forEach(function(k) {
+          cartoJour[k] = (_samB[k] || []).filter(function(pl) { return pl.debut >= 24 * 60; });
+        });
+      } else { cartoJour = null; }
+    } else {
+      cartoJour = cartoBase[AppState.jourActif] || null;
+    }
     var cartoNext  = hasCtx && jourNext ? (cartoBase[jourNext] || null) : null;
-    var cartoPrev  = hasCtx && jourPrev ? (cartoBase[jourPrev] || null) : null;
+    var cartoPrev  = !isSunday && hasCtx && jourPrev ? (cartoBase[jourPrev] || null) : null;
 
     // Groupes ayant au moins un créneau cartographie (courant ou contexte) ou une livraison planifiée
     var groupesActifs = GROUPES_MAG.filter(function(g) {
@@ -9967,7 +10036,8 @@ function rendreGanttMagasins(data) {
       var plagesNext = cartoNext ? (cartoNext[g.carto] || []) : [];
       var plagesPrev = cartoPrev ? (cartoPrev[g.carto] || []) : [];
       var livsG  = livs.filter(function(e) {
-        return g.marcs.indexOf(((e.bloc.arret && e.bloc.arret.marchandise) || '').toUpperCase()) >= 0;
+        var a = e._arret || e.bloc.arret;
+        return g.marcs.indexOf(((a && a.marchandise) || '').toUpperCase()) >= 0;
       });
       return plages.length > 0 || plagesNext.length > 0 || plagesPrev.length > 0 || livsG.length > 0;
     });
@@ -9989,7 +10059,7 @@ function rendreGanttMagasins(data) {
     nameEl.textContent = mag;
     var cntEl = document.createElement('span');
     cntEl.style.cssText = 'font-size:9px;color:#90A4AE;margin-top:2px;display:block';
-    cntEl.textContent = livs.length + ' liv.';
+    cntEl.textContent = livs.filter(function(e) { return e.bloc.type === 'livraison'; }).length + ' liv.';
     labelMag.appendChild(nameEl);
     labelMag.appendChild(cntEl);
     groupe.appendChild(labelMag);
@@ -10002,7 +10072,8 @@ function rendreGanttMagasins(data) {
       var plagesNextG = cartoNext ? (cartoNext[g.carto] || []) : [];
       var plagesPrevG = cartoPrev ? (cartoPrev[g.carto] || []) : [];
       var livsG   = livs.filter(function(e) {
-        return g.marcs.indexOf(((e.bloc.arret && e.bloc.arret.marchandise) || '').toUpperCase()) >= 0;
+        var a = e._arret || e.bloc.arret;
+        return g.marcs.indexOf(((a && a.marchandise) || '').toUpperCase()) >= 0;
       });
 
       // Stacking intra-groupe
@@ -10123,9 +10194,10 @@ function rendreGanttMagasins(data) {
         });
       }
 
-      // Blocs livraison
+      // Blocs livraison et emballage
       livsG.forEach(function(entry, i) {
         var b        = entry.bloc;
+        var isEmb    = b.type === 'emballage';
         var posMin   = b.debut + entry.shift; // position sur la timeline courante (en minutes)
         var barTop   = BAR_TOP_MAG + laneOf[i] * (BAR_H_MAG + BAR_GAP_MAG);
         var div      = document.createElement('div');
@@ -10134,27 +10206,32 @@ function rendreGanttMagasins(data) {
         div.style.width  = Math.max(b.duree * PPM, entry.isCtx ? 4 : 2) + 'px';
         div.style.top    = barTop + 'px';
         div.style.height = BAR_H_MAG + 'px';
-        div.style.background = coulMag;
+        div.style.background = isEmb ? '#8D6E63' : coulMag;
         div.style.pointerEvents = 'none';
         div.style.fontSize = '9px';
-        if (entry.isCtx) { div.style.opacity = '0.45'; div.style.border = '1px dashed ' + coulMag; }
-        var ut = b.arret.utAffecte !== undefined ? b.arret.utAffecte : b.arret.ut;
+        if (entry.isCtx) { div.style.opacity = '0.45'; div.style.border = '1px dashed ' + (isEmb ? '#8D6E63' : coulMag); }
 
-        var horsPlage = !entry.isCtx && plagesG.length > 0 && !plagesG.some(function(pl) {
-          var shiftPl = pl.debut < PIVOT_DEB ? 24 * 60 : 0;
-          return posMin >= pl.debut + shiftPl && posMin + b.duree <= pl.fin + shiftPl;
-        });
-        if (horsPlage) {
-          div.classList.add('conflit-simultane');
-          var plagesTxt = plagesG.map(function(pl) {
+        if (!isEmb) {
+          var ut = b.arret.utAffecte !== undefined ? b.arret.utAffecte : b.arret.ut;
+          var horsPlage = !entry.isCtx && plagesG.length > 0 && !plagesG.some(function(pl) {
             var shiftPl = pl.debut < PIVOT_DEB ? 24 * 60 : 0;
-            return ganttMinToClockLabel(pl.debut + shiftPl) + '–' + ganttMinToClockLabel(pl.fin + shiftPl);
-          }).join(', ');
-          div.title = '⚠ Hors plage ' + g.label + ' (' + plagesTxt + ') — ' + entry.tourneeId + ' — ' + b.label;
+            return posMin >= pl.debut + shiftPl && posMin + b.duree <= pl.fin + shiftPl;
+          });
+          if (horsPlage) {
+            div.classList.add('conflit-simultane');
+            var plagesTxt = plagesG.map(function(pl) {
+              var shiftPl = pl.debut < PIVOT_DEB ? 24 * 60 : 0;
+              return ganttMinToClockLabel(pl.debut + shiftPl) + '–' + ganttMinToClockLabel(pl.fin + shiftPl);
+            }).join(', ');
+            div.title = '⚠ Hors plage ' + g.label + ' (' + plagesTxt + ') — ' + entry.tourneeId + ' — ' + b.label;
+          } else {
+            div.title = (entry.isCtx ? (entry.shift < 0 ? '[Veille] ' : '[Lendemain] ') : '') + entry.tourneeId + ' — ' + b.label;
+          }
+          div.textContent = entry.isCtx ? entry.tourneeId : entry.tourneeId + ' (' + ut + 'UT)';
         } else {
           div.title = (entry.isCtx ? (entry.shift < 0 ? '[Veille] ' : '[Lendemain] ') : '') + entry.tourneeId + ' — ' + b.label;
+          div.textContent = entry.isCtx ? entry.tourneeId : 'EMB';
         }
-        div.textContent = entry.isCtx ? entry.tourneeId : entry.tourneeId + ' (' + ut + 'UT)';
         contenu.appendChild(div);
       });
 
@@ -10295,7 +10372,8 @@ document.addEventListener('DOMContentLoaded', function() {
       var deltaX     = e.clientX - bd.startX;
       var stepPx     = 15 * AppState.PPM;
       var snapped    = Math.round(deltaX / stepPx) * stepPx;
-      var minBarLeft = AppState.jourActif ? (6 * 60 * AppState.PPM) : 0; // pas avant 6h si jour actif
+      var _isDimDrag = AppState.jourActif === 'Dimanche';
+      var minBarLeft = _isDimDrag ? (22 * 60 * AppState.PPM) : (AppState.jourActif ? (6 * 60 * AppState.PPM) : 0);
       var newBarLeft = Math.max(minBarLeft, bd.startBarLeft + snapped);
       bd.barEl.style.left = newBarLeft + 'px';
       var newOffPx = newBarLeft + bd.barLeftToOffsetPx;
@@ -10432,8 +10510,15 @@ document.addEventListener('DOMContentLoaded', function() {
       var newBarLeft = parseFloat(bd.barEl.style.left) || 0;
       var newOffPx   = newBarLeft + bd.barLeftToOffsetPx;
       var newOff     = Math.max(0, Math.round(newOffPx / AppState.PPM / 15) * 15);
-      // Drop avant 6h : ramener à 6h00 (clamp, pas de saut au lendemain)
-      if (AppState.jourActif && newOff < 6 * 60) newOff = 6 * 60;
+      if (AppState.jourActif === 'Dimanche' && newOff < 22 * 60) {
+        newOff = 22 * 60; // fenêtre Dimanche commence à 22h
+      } else if (AppState.jourActif === 'Samedi' && newOff >= 22 * 60) {
+        afficherToast('⛔ Fermeture Sam.22h–Dim.22h : impossible de placer une tournée dans cette plage', 'erreur');
+        if (AppState.donnees) rendreGantt(AppState.donnees);
+        return;
+      } else if (AppState.jourActif && newOff < 6 * 60) {
+        newOff = 6 * 60; // pas avant 6h pour les autres jours
+      }
 
       if (bd._targetModId && bd._targetModId !== bd.modId) {
         // ── Déplacement inter-module ──────────────────────────
