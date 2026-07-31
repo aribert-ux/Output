@@ -8157,10 +8157,82 @@ function _afOpt_phase2LNS(tourStates, dm, jour, startCout, onProgress, onDone) {
 
 function _afOpt_resolveNavettes(unplanned, finalStates, dm, jour) {
   if (!unplanned || !unplanned.length) return;
-  // Déléguer à la fonction existante si disponible
-  if (typeof _afOpt_resolveNavettesImpl === 'function') {
-    _afOpt_resolveNavettesImpl(unplanned, finalStates, dm, jour);
-  }
+
+  console.log('[afOpt] resolveNavettes (mode sans navette) —',
+    unplanned.length, 'flux non placés');
+
+  // Sans navettes : tentative de placement en tournée solo de dernier recours
+  var CAP = 33;
+
+  // Regrouper les flux non placés par magasin + marchandise + entrepôt
+  var grouped = {};
+  unplanned.forEach(function(f) {
+    var key = f.entrepot + '|' + _afOpt_getFamille(f.marchandise);
+    if (!grouped[key]) grouped[key] = { entrepot: f.entrepot, famille: _afOpt_getFamille(f.marchandise), flux: [] };
+    grouped[key].flux.push(f);
+  });
+
+  Object.keys(grouped).forEach(function(key) {
+    var grp = grouped[key];
+
+    // Construire un groupe minimal avec les flux disponibles
+    var bucket = { flux: [], utTotal: 0 };
+    var buckets = [bucket];
+
+    grp.flux.forEach(function(f) {
+      var ut = f.utAffecte || f.ut;
+      if (bucket.utTotal + ut > CAP + 0.01) {
+        bucket = { flux: [], utTotal: 0 };
+        buckets.push(bucket);
+      }
+      bucket.flux.push(f);
+      bucket.utTotal += ut;
+    });
+
+    buckets.forEach(function(b) {
+      if (!b.flux.length) return;
+
+      var fakeGroupe = {
+        famille:  grp.famille,
+        entrepot: grp.entrepot,
+        zone:     grp.entrepot,
+        utTotal:  b.utTotal,
+        flux:     b.flux
+      };
+
+      var best = _afOpt_findBestPermutation(fakeGroupe, dm, jour);
+      if (!best) {
+        console.warn('[afOpt] resolveNavettes: aucune permutation valide pour groupe de repli —',
+          grp.famille, grp.entrepot,
+          b.flux.map(function(f) { return f.magasin; }).join(', '));
+        return;
+      }
+
+      fakeGroupe.best = best;
+      var result = _afOpt_placerGroupe(fakeGroupe, best, dm, jour);
+      if (result.placed) {
+        console.log('[afOpt] resolveNavettes: groupe de repli placé —', result.tid);
+        // Ajouter à finalStates pour la finalisation
+        var flux      = AppState.planLocal[result.tid] || [];
+        var tData     = (AppState.tourneesLocales || []).filter(function(t) {
+          return String(t[0]) === result.tid;
+        })[0];
+        finalStates.push({
+          tid:       result.tid,
+          modId:     result.modId,
+          entrepot:  tData ? tData[2] : grp.entrepot,
+          retour:    tData ? tData[2] : grp.entrepot,
+          flux:      flux,
+          offsetMin: result.offsetMin,
+          chgtDur:   tData ? parseFloat(tData[4]) || 0 : 0,
+          admDur:    tData ? parseFloat(tData[3]) || 15 : 15
+        });
+      } else {
+        console.warn('[afOpt] resolveNavettes: groupe de repli non plaçable —',
+          result.reason, grp.famille, grp.entrepot);
+      }
+    });
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════
