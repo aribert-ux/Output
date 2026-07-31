@@ -3723,9 +3723,9 @@ function rendrePlanningFlux(data) {
     var slots = (jourData[cat] || []).slice();
     if (!slots.length) slots = (jourData.sec || []).concat(jourData.frais || [], jourData.surg || []);
     // Samedi  : fenêtre 7h30-22h  → exclure créneaux décalés (>= 1440 = lundi matin après fermeture).
-    // Dimanche: fenêtre 22h-7h30  → exclure créneaux diurnes  (< 1440 = samedi journée / fermeture).
+    // Dimanche: fenêtre 22h-7h30  → conserver nocturnes (fin<debut) + créneaux matinaux décalés (>=1440).
     if (jourNom === 'Samedi')   slots = slots.filter(function(pl) { return pl.debut < 24 * 60; });
-    if (jourNom === 'Dimanche') slots = slots.filter(function(pl) { return pl.debut >= 24 * 60; });
+    if (jourNom === 'Dimanche') slots = slots.filter(function(pl) { return pl.debut >= 24 * 60 || pl.fin < pl.debut; });
     slots.sort(function(a, b) { return a.debut - b.debut; });
     return slots;
   }
@@ -3903,10 +3903,12 @@ function rendrePlanningFlux(data) {
   var _totalH = numRows * ROW_H;
 
   function _showSlotHL(f) {
-    var jourData = (cartoPlag[f.magasin] || {})[jourNom] || {};
+    var jourData = (cartoPlag[f.magasin] || {})[_jMat(jourNom)] || {};
     var cat = catPourMarc(f.marchandise);
     var slots = (jourData[cat] || []).slice();
     if (!slots.length) slots = (jourData.sec || []).concat(jourData.frais || [], jourData.surg || []);
+    if (jourNom === 'Samedi')   slots = slots.filter(function(s) { return s.debut < 24 * 60; });
+    if (jourNom === 'Dimanche') slots = slots.filter(function(s) { return s.debut >= 24 * 60 || s.fin < s.debut; });
     hlContainer.innerHTML = '';
     slots.forEach(function(s) {
       var dS = s.debut;
@@ -4677,8 +4679,8 @@ function _executerFusionNavettes(srcId, tgtId) {
       if (fnTgt) {
         // La navette source est absorbée : on orpheline la paire (plus de navette physique)
         // pour que son flux dérivé reste visible et planifiable dans le gantt.
+        // utNavette reste inchangé : la couverture du flux original (entrepotOrigine→magasin) doit rester active.
         fnSrc._navetteId = null;
-        fnSrc.utNavette  = 0;
         fnTgt._fusionInfo = { role: 'tgt', peerNavFluxId: fnSrc._navFluxId, utTransfere: utTransfere, srcNavette: JSON.parse(JSON.stringify(src)) };
         fnSrc._fusionInfo = { role: 'src', peerNavFluxId: fnTgt._navFluxId, tgtNavetteId: tgt._navetteId, utTransfere: utTransfere };
       } else {
@@ -6116,9 +6118,9 @@ function rendreGantt(data) {
                   slots = (jourData.sec || []).concat(jourData.frais || [], jourData.surg || []);
                 }
                 // Samedi  : fenêtre 7h30-22h  → masquer créneaux décalés (>= 1440 = lundi matin).
-                // Dimanche: fenêtre 22h-7h30  → masquer créneaux diurnes  (< 1440 = samedi journée).
+                // Dimanche: fenêtre 22h-7h30  → conserver créneaux nocturnes (fin<debut) + créneaux matinaux décalés (>=1440).
                 if (jourNomHL === 'Samedi')   slots = slots.filter(function(s) { return s.debut < 24 * 60; });
-                if (jourNomHL === 'Dimanche') slots = slots.filter(function(s) { return s.debut >= 24 * 60; });
+                if (jourNomHL === 'Dimanche') slots = slots.filter(function(s) { return s.debut >= 24 * 60 || s.fin < s.debut; });
                 slots.forEach(function(s) {
                   var dS = s.debut;
                   var dE = s.fin < s.debut ? s.fin + 1440 : s.fin;
@@ -7411,6 +7413,109 @@ function _afOpt_phase1_fractionner(groupes, fluxOriginaux) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// PHASE 1.2b — Filtre durée maximale de tournée (≤ 11h)
+// ══════════════════════════════════════════════════════════════════
+
+var _DUREE_MAX_TOURNEE = 600; // 11h en minutes
+
+function _afOpt_dureePermutation(entrepot, arrets, dm) {
+  var RSE_CYCLE = 270;
+  var RSE_PAUSE = 45;
+  var RSE_SVC   = 360;
+  var RSE_PSVC  = 30;
+
+  var lieu            = entrepot;
+  var driveSinceBreak = 0;
+  var svcSinceBreak   = 0;
+  var duree           = 0;
+
+  for (var i = 0; i < arrets.length; i++) {
+    var arret    = arrets[i];
+    var d        = _afOpt_getDist(dm, lieu, arret.magasin);
+    if (!d) return Infinity;
+
+    var segDrive = d.m;
+    var rseExtra = 0;
+
+    if (driveSinceBreak + segDrive > RSE_CYCLE) {
+      rseExtra        = RSE_PAUSE;
+      driveSinceBreak = (driveSinceBreak + segDrive) - RSE_CYCLE;
+      svcSinceBreak   = driveSinceBreak;
+    } else {
+      driveSinceBreak += segDrive;
+      svcSinceBreak   += segDrive;
+    }
+
+    if (svcSinceBreak >= RSE_SVC) {
+      rseExtra      += RSE_PSVC;
+      svcSinceBreak  = 0;
+    }
+
+    duree += segDrive + rseExtra;
+
+    var svc = (typeof getTempsDecharge === 'function')
+      ? getTempsDecharge(parseFloat(arret.utAffecte || arret.ut) || 0)
+      : 15;
+
+    svcSinceBreak += svc;
+    duree         += svc;
+    lieu           = arret.magasin;
+  }
+
+  var dRet = _afOpt_getDist(dm, lieu, entrepot);
+  if (dRet) duree += dRet.m;
+
+  return duree;
+}
+
+function _afOpt_phase1_filtrerDuree(groupes, dm) {
+  var valides   = [];
+  var invalides = [];
+
+  groupes.forEach(function(g) {
+    var magasinsVus       = {};
+    var magasinsDistincts = [];
+    g.flux.forEach(function(f) {
+      if (!magasinsVus[f.magasin]) {
+        magasinsVus[f.magasin] = true;
+        magasinsDistincts.push(f.magasin);
+      }
+    });
+
+    function buildArrets(permMagasins) {
+      return permMagasins.map(function(mag) {
+        var utTotal = 0, marc = '';
+        g.flux.forEach(function(f) {
+          if (f.magasin === mag) { utTotal += f.utAffecte; marc = f.marchandise; }
+        });
+        return { magasin: mag, marchandise: marc, ut: utTotal, utAffecte: utTotal, entrepot: g.entrepot };
+      });
+    }
+
+    var perms = magasinsDistincts.length > _PERM_EXACT_LIMIT
+      ? [_afOpt_nearestNeighbour(g.entrepot, magasinsDistincts, dm)]
+      : _afOpt_permutations(magasinsDistincts);
+
+    var meilleureeDuree = Infinity;
+    perms.forEach(function(perm) {
+      var duree = _afOpt_dureePermutation(g.entrepot, buildArrets(perm), dm);
+      if (duree < meilleureeDuree) meilleureeDuree = duree;
+    });
+
+    if (meilleureeDuree <= _DUREE_MAX_TOURNEE) {
+      valides.push(g);
+    } else {
+      console.warn('[afOpt] filtreDuree: groupe rejeté (duree=' + Math.round(meilleureeDuree) + 'min) —',
+        g.famille, g.entrepot, magasinsDistincts.join(', '));
+      invalides.push({ groupe: g, reason: 'duree_excedee', duree: meilleureeDuree });
+    }
+  });
+
+  console.log('[afOpt] filtreDuree — valides:', valides.length, ' rejetés:', invalides.length);
+  return { valides: valides, invalides: invalides };
+}
+
+// ══════════════════════════════════════════════════════════════════
 // PHASE 1.3 — Simulation de route + intervalles valides
 // ══════════════════════════════════════════════════════════════════
 
@@ -7425,6 +7530,7 @@ function _afOpt_simulerGroupe(entrepot, arrets, dm, jour) {
   var svcSinceBreak   = 0;
   var deliveryTimes   = [];
   var dureeRoute      = 0;
+  var hasPause        = false;
 
   for (var i = 0; i < arrets.length; i++) {
     var arret = arrets[i];
@@ -7444,6 +7550,7 @@ function _afOpt_simulerGroupe(entrepot, arrets, dm, jour) {
 
     if (driveSinceBreak + segDrive > RSE_CYCLE) {
       rseExtra        = RSE_PAUSE;
+      hasPause        = true;
       driveSinceBreak = (driveSinceBreak + segDrive) - RSE_CYCLE;
       svcSinceBreak   = driveSinceBreak;
     } else {
@@ -7453,6 +7560,7 @@ function _afOpt_simulerGroupe(entrepot, arrets, dm, jour) {
 
     if (svcSinceBreak >= RSE_SVC) {
       rseExtra      += RSE_PSVC;
+      hasPause       = true;
       svcSinceBreak  = 0;
     }
 
@@ -7477,7 +7585,7 @@ function _afOpt_simulerGroupe(entrepot, arrets, dm, jour) {
   var dRet = _afOpt_getDist(dm, lieu, entrepot);
   if (dRet) dureeRoute += dRet.m;
 
-  return { valid: true, dureeRoute: dureeRoute, deliveryTimes: deliveryTimes };
+  return { valid: true, dureeRoute: dureeRoute, deliveryTimes: deliveryTimes, hasPause: hasPause };
 }
 
 function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDur) {
@@ -7491,7 +7599,18 @@ function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDu
     return [];
   }
 
-  var validSegments = [{ debut: -1440, fin: 2880 }];
+  // Bornes globales sur l'offset = accroche-start (t), départ = t + SETUP :
+  //   - accroche après 6h du jour            → t >= 360
+  //   - accroche avant 6h du lendemain       → t <  1800
+  //   - toutes livraisons avant 7h30 lend.   → t + SETUP + lastFinRel <= 1890
+  var lastFinRel   = sim.deliveryTimes.length
+    ? sim.deliveryTimes[sim.deliveryTimes.length - 1].finRel
+    : 0;
+  var DEBUT_GLOBAL = 360;
+  var FIN_GLOBAL   = Math.min(1800, 1890 - SETUP - lastFinRel);
+  if (FIN_GLOBAL <= DEBUT_GLOBAL) return [];
+
+  var validSegments = [{ debut: DEBUT_GLOBAL, fin: FIN_GLOBAL }];
 
   for (var i = 0; i < arrets.length; i++) {
     var arret = arrets[i];
@@ -7641,7 +7760,8 @@ function _afOpt_findBestPermutation(groupe, dm, jour) {
         intervals:     intervals,
         duree:         sim.dureeRoute,
         score:         score,
-        deliveryTimes: sim.deliveryTimes
+        deliveryTimes: sim.deliveryTimes,
+        hasPause:      sim.hasPause || false
       };
     }
   });
@@ -7694,12 +7814,14 @@ function _afOpt_filtrerIntervals(intervals, deliveryTimes, setup) {
 }
 
 // Cherche le premier offsetMin valide dans les intervalles en évitant les conflits storeSlots.
-// Avance t au-delà de chaque créneau occupé jusqu'à trouver une position sans conflit.
-function _afOpt_trouverOffsetMin(intervals, deliveryTimes, setup) {
-  setup = (setup !== undefined) ? setup : 45;
+// minOffset (optionnel) : t ne peut pas démarrer avant cette valeur (ex. finMin du tour précédent dans le même module).
+function _afOpt_trouverOffsetMin(intervals, deliveryTimes, setup, minOffset) {
+  setup     = (setup     !== undefined && setup     !== null) ? +setup     : 45;
+  minOffset = (minOffset !== undefined && minOffset !== null) ? +minOffset : 0;
   for (var ii = 0; ii < intervals.length; ii++) {
     var iv = intervals[ii];
-    var t  = iv.debut;
+    var t  = Math.max(iv.debut, minOffset);
+    if (t > iv.fin) continue;
     var iter = 0;
     while (t <= iv.fin && iter++ < 500) {
       var tNext = Infinity;
@@ -7742,9 +7864,49 @@ function _afOpt_enregistrerSlots(tourEntry, setup) {
 function _afOpt_placerGroupe(groupe, best, dm, jour) {
   // FRAIS/SURG : chgt(30) + adm(15) = 45 ; SEC : adm seul = 15
   var SETUP = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 45 : 15;
+  // Le Gantt rend un bloc décrochage (admDur=15min) après la fin du retour ;
+  // finMin doit l'inclure pour éviter la superposition avec le chargement suivant.
+  var DECROCHE = 15;
 
-  // Première position valide (avance automatiquement past les créneaux storeSlots occupés)
-  var offsetMin = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP);
+  // Phase 1.6 — First Fit avec règles de découpe des shifts (phase 6) :
+  // Un module est compatible ssi :
+  //   • même entrepôt (pas de téléportation)
+  //   • ni le dernier trajet du module ni la tournée à placer ne contient une pause RSE
+  //   • la durée totale du shift résultant reste dans les limites légales
+  var offsetMin   = null;
+  var targetModId = null;
+  var targetMod   = null;
+
+  for (var mi = 0; mi < _afOpt_modulesInternes.length; mi++) {
+    var mod      = _afOpt_modulesInternes[mi];
+    var lastTour = mod.tours[mod.tours.length - 1];
+    if (lastTour.entrepot !== groupe.entrepot) continue;
+
+    // Cas 1/2/3 — Découpe si l'un ou l'autre contient une pause RSE
+    if (lastTour.hasPause || best.hasPause) continue;
+
+    var candidate = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP, lastTour.finMin);
+    if (candidate === null) continue;
+
+    // Cas 4 — Durée maximale du shift (11h jour / 10h nuit)
+    var firstTour     = mod.tours[0];
+    var newFinMin     = candidate + SETUP + best.duree + DECROCHE;
+    var shiftDuree    = newFinMin - firstTour.offsetMin;
+    var isDayShift    = firstTour.offsetMin >= 360 && firstTour.offsetMin < 1320;
+    var maxShiftDuree = isDayShift ? 660 : 600;
+    if (shiftDuree > maxShiftDuree) continue;
+
+    offsetMin   = candidate;
+    targetModId = mod.modId;
+    targetMod   = mod;
+    break;
+  }
+
+  // Aucun module compatible : créer un nouveau module (sans contrainte de finMin)
+  if (offsetMin === null) {
+    offsetMin = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP);
+  }
+
   if (offsetMin === null) {
     console.warn('[afOpt] placerGroupe: aucun créneau libre —',
       groupe.famille, groupe.entrepot,
@@ -7752,22 +7914,48 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
     return { placed: false, reason: 'creneaux_satures' };
   }
 
-  var finMin    = offsetMin + SETUP + best.duree;
+  var finMin    = offsetMin + SETUP + best.duree + DECROCHE;
   var tid       = _afOpt_genTid();
   var marc      = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
   var chgtSaved = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 30 : 0;
 
   if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
   AppState.tourneesLocales.push([tid, 33, groupe.entrepot, 15, chgtSaved, 'Non', marc, jour]);
-  AppState.planLocal[tid] = groupe.flux.map(function(f) { return Object.assign({}, f); });
+
+  // Flux dans l'ordre de la permutation optimisée
+  var _fluxParMag = {};
+  groupe.flux.forEach(function(f) {
+    if (!_fluxParMag[f.magasin]) _fluxParMag[f.magasin] = [];
+    _fluxParMag[f.magasin].push(Object.assign({}, f));
+  });
+  var _fluxOrdonnes = [];
+  best.permutation.forEach(function(mag) {
+    (_fluxParMag[mag] || []).forEach(function(f) { _fluxOrdonnes.push(f); });
+  });
+  AppState.planLocal[tid] = _fluxOrdonnes;
   _afOpt_autoCreatedTids.push(tid);
 
-  // Un shift par tournée : chaque tournée obtient son propre module
-  var nums  = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g, '')) || 0; });
-  var nxt   = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
-  var modId = 'M' + nxt;
-  AppState.modules.push({ id: modId, tours: [tid] });
-  _afOpt_autoCreatedModIds.push(modId);
+  var modId;
+  if (targetMod) {
+    // Ajouter au module existant (même entrepôt, pas de superposition temporelle)
+    modId = targetModId;
+    for (var ami = 0; ami < AppState.modules.length; ami++) {
+      if (AppState.modules[ami].id === modId) {
+        AppState.modules[ami].tours.push(tid);
+        break;
+      }
+    }
+    console.log('[afOpt] placerGroupe: réutilise module', modId,
+      '(entrepôt', groupe.entrepot + ', offset=' + offsetMin + ')');
+  } else {
+    // Créer un nouveau module
+    var nums = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g, '')) || 0; });
+    var nxt  = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
+    modId = 'M' + nxt;
+    AppState.modules.push({ id: modId, tours: [tid] });
+    _afOpt_autoCreatedModIds.push(modId);
+  }
+
   AppState.modulesOffsets[modId + '_' + tid] = offsetMin;
 
   var dRet = best.arrets.length
@@ -7782,11 +7970,16 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
     retour:        groupe.entrepot,
     arrets:        best.arrets,
     deliveryTimes: best.deliveryTimes,
+    hasPause:      best.hasPause || false,
     _retourDuree:  dRet ? dRet.m : 0,
     _setup:        SETUP
   };
 
-  _afOpt_modulesInternes.push({ modId: modId, tours: [tourEntry] });
+  if (targetMod) {
+    targetMod.tours.push(tourEntry);
+  } else {
+    _afOpt_modulesInternes.push({ modId: modId, tours: [tourEntry] });
+  }
   _afOpt_enregistrerSlots(tourEntry, SETUP);
 
   return { placed: true, tid: tid, modId: modId, offsetMin: offsetMin };
@@ -8209,6 +8402,11 @@ function autoFillOptimise() {
       _opt_groupesValides   = [];
       _opt_groupesInvalides = [];
       console.log('[afOpt] groupes FFD =', _opt_groupes.length);
+
+      var _filtreRes = _afOpt_phase1_filtrerDuree(_opt_groupes, _opt_dm);
+      _opt_groupes   = _filtreRes.valides;
+      _filtreRes.invalides.forEach(function(inv) { _opt_groupesInvalides.push(inv); });
+      console.log('[afOpt] groupes après filtre durée 11h =', _opt_groupes.length);
 
       _afOpt_updateProgress(0.10, 'Phase 1 — Permutations (' + _opt_groupes.length + ' groupes)…');
 
@@ -10021,7 +10219,7 @@ function rendreGanttMagasins(data) {
       if (_samB) {
         cartoJour = {};
         ['sec','frais','surg'].forEach(function(k) {
-          cartoJour[k] = (_samB[k] || []).filter(function(pl) { return pl.debut >= 24 * 60; });
+          cartoJour[k] = (_samB[k] || []).filter(function(pl) { return pl.debut >= 24 * 60 || pl.fin < pl.debut; });
         });
       } else { cartoJour = null; }
     } else {
