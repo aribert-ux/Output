@@ -7488,16 +7488,17 @@ function _afOpt_phase1_ffd(fluxList) {
     }
 
     if (!placed) {
+      var utPlace = Math.min(flux.ut, CAP);
       groupes.push({
         famille:  famille,
         entrepot: flux.entrepot,
         zone:     flux.zoneEntrepot || flux.entrepot || '',
-        utTotal:  flux.ut,
+        utTotal:  utPlace,
         flux: [{
           magasin:      flux.magasin,
           marchandise:  flux.marchandise,
           ut:           flux.ut,
-          utAffecte:    flux.ut,
+          utAffecte:    utPlace,
           entrepot:     flux.entrepot,
           zoneEntrepot: flux.zoneEntrepot || '',
           embDelai:     flux.embDelai     || 0
@@ -7583,7 +7584,7 @@ function _afOpt_phase1_fractionner(groupes, fluxOriginaux) {
 // PHASE 1.2b — Filtre durée maximale de tournée (≤ 11h)
 // ══════════════════════════════════════════════════════════════════
 
-var _DUREE_MAX_TOURNEE = 600; // 11h en minutes
+var _DUREE_MAX_TOURNEE = 660; // 11h = 660 min
 
 function _afOpt_dureePermutation(entrepot, arrets, dm) {
   var RSE_CYCLE = 270;
@@ -8028,52 +8029,139 @@ function _afOpt_enregistrerSlots(tourEntry, setup) {
   });
 }
 
-function _afOpt_placerGroupe(groupe, best, dm, jour) {
-  // FRAIS/SURG : chgt(30) + adm(15) = 45 ; SEC : adm seul = 15
-  var SETUP = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 45 : 15;
-  // Le Gantt rend un bloc décrochage (admDur=15min) après la fin du retour ;
-  // finMin doit l'inclure pour éviter la superposition avec le chargement suivant.
-  var DECROCHE = 15;
+// ── Règles de découpe des shifts (6.1 / 6.2) ─────────────────────────────
+// Recalcule entièrement AppState.shiftSplits[modId] à partir des tours du module.
+// mod.tours = tableau de tourEntry objects ordonnés par offsetMin.
+function _afOpt_appliquerReglesShift(modId, mod) {
+  if (!AppState.shiftSplits) AppState.shiftSplits = {};
 
-  // Phase 1.6 — First Fit avec règles de découpe des shifts (phase 6) :
-  // Un module est compatible ssi :
-  //   • même entrepôt (pas de téléportation)
-  //   • ni le dernier trajet du module ni la tournée à placer ne contient une pause RSE
-  //   • la durée totale du shift résultant reste dans les limites légales
-  var offsetMin   = null;
-  var targetModId = null;
-  var targetMod   = null;
+  var tours = mod.tours;
+  if (!tours || tours.length < 2) { AppState.shiftSplits[modId] = []; return; }
 
-  for (var mi = 0; mi < _afOpt_modulesInternes.length; mi++) {
-    var mod      = _afOpt_modulesInternes[mi];
-    var lastTour = mod.tours[mod.tours.length - 1];
-    if (lastTour.entrepot !== groupe.entrepot) continue;
+  var splits = [];  // tids après lesquels couper
 
-    // Cas 1/2/3 — Découpe si l'un ou l'autre contient une pause RSE
-    if (lastTour.hasPause || best.hasPause) continue;
-
-    var candidate = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP, lastTour.finMin);
-    if (candidate === null) continue;
-
-    // Cas 4 — Durée maximale du shift (11h jour / 10h nuit)
-    var firstTour     = mod.tours[0];
-    var newFinMin     = candidate + SETUP + best.duree + DECROCHE;
-    var shiftDuree    = newFinMin - firstTour.offsetMin;
-    var isDayShift    = firstTour.offsetMin >= 360 && firstTour.offsetMin < 1320;
-    var maxShiftDuree = isDayShift ? 660 : 600;
-    if (shiftDuree > maxShiftDuree) continue;
-
-    offsetMin   = candidate;
-    targetModId = mod.modId;
-    targetMod   = mod;
-    break;
+  // Pass 1 — coupures pause (Cas 1 / 2 / 3)
+  for (var i = 0; i < tours.length; i++) {
+    var cur  = tours[i];
+    var prev = i > 0                ? tours[i - 1] : null;
+    var next = i < tours.length - 1 ? tours[i + 1] : null;
+    if (cur.hasPause) {
+      // Cas 1 : isoler la tournée avec pause RSE
+      if (prev && splits.indexOf(prev.tid) < 0) splits.push(prev.tid);
+      if (next && splits.indexOf(cur.tid)  < 0) splits.push(cur.tid);
+    } else {
+      // Cas 2/3 : couper si adjacente à une tournée avec pause
+      if (prev && prev.hasPause && splits.indexOf(prev.tid) < 0) splits.push(prev.tid);
+      if (next && next.hasPause && splits.indexOf(cur.tid)  < 0) splits.push(cur.tid);
+    }
   }
 
-  // Aucun module compatible : créer un nouveau module (sans contrainte de finMin)
+  // Reconstruire les groupes issus du Pass 1
+  var shiftGroups = [];
+  var curGroup = [tours[0]];
+  for (var j = 1; j < tours.length; j++) {
+    if (splits.indexOf(tours[j - 1].tid) >= 0) { shiftGroups.push(curGroup); curGroup = []; }
+    curGroup.push(tours[j]);
+  }
+  shiftGroups.push(curGroup);
+
+  // Pass 2 — coupures durée maximale (Cas 4)
+  shiftGroups.forEach(function(group) {
+    var start = 0;
+    while (start < group.length - 1) {
+      var firstTour  = group[start];
+      var isDayShift = firstTour.offsetMin >= 360 && firstTour.offsetMin < 1320;
+      var maxDur     = isDayShift ? 660 : 600;
+
+      // Trouver le premier indice où le span dépasse la limite
+      var cutAfter = -1;
+      for (var k = start + 1; k < group.length; k++) {
+        if (group[k].finMin - firstTour.offsetMin > maxDur) {
+          cutAfter = k > start + 1 ? k - 1 : start;  // couper avant k (ou après start si cas dégénéré)
+          break;
+        }
+      }
+      if (cutAfter < 0) break;  // tout le groupe restant rentre dans la limite
+      if (splits.indexOf(group[cutAfter].tid) < 0) splits.push(group[cutAfter].tid);
+      start = cutAfter + 1;
+    }
+  });
+
+  AppState.shiftSplits[modId] = splits;
+}
+
+function _afOpt_placerGroupe(groupe, best, dm, jour) {
+  var SETUP    = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 45 : 15;
+  var DECROCHE = 15;
+
+  // Retour de la tournée candidate vers son entrepôt (best.duree inclut déjà ce retour)
+  var lastStoreNew   = best.arrets.length
+      ? best.arrets[best.arrets.length - 1].magasin : null;
+  var dRetNew        = lastStoreNew ? _afOpt_getDist(dm, lastStoreNew, groupe.entrepot) : null;
+  var retourDureeNew = dRetNew ? dRetNew.m : 0;
+
+  var offsetMin       = null;
+  var targetModId     = null;
+  var targetMod       = null;
+  var targetInsertIdx = -1;
+
+  // ── Étape 2 : chercher un emplacement dans les modules existants ──────────
+  // Une tournée avec pause RSE ne peut pas être enchaînée dans un module existant.
+  if (!best.hasPause) {
+    for (var mi = 0; mi < _afOpt_modulesInternes.length; mi++) {
+      var mod       = _afOpt_modulesInternes[mi];
+      var firstTour = mod.tours[0];
+
+      // Parcourir tous les trous : avant tours[0], entre tours consécutifs, après le dernier
+      for (var gi = 0; gi <= mod.tours.length; gi++) {
+        var T_prev = gi > 0               ? mod.tours[gi - 1] : null;
+        var T_next = gi < mod.tours.length ? mod.tours[gi]    : null;
+
+        // Pas d'enchaînement immédiatement après un trajet contenant une pause RSE
+        if (T_prev && T_prev.hasPause) continue;
+
+        // ── Contrainte T_prev : fin effective après modification de l'entrepôt de retour ──
+        // fin_T_prev_modifiée = (finMin - _retourDuree) + dist(dernier_magasin_prev, E_new)
+        var minStart = 0;
+        if (T_prev) {
+          var lastStorePrev = T_prev.arrets.length
+              ? T_prev.arrets[T_prev.arrets.length - 1].magasin : null;
+          var dPrevToE     = lastStorePrev
+              ? _afOpt_getDist(dm, lastStorePrev, groupe.entrepot) : null;
+          minStart = T_prev.finMin - T_prev._retourDuree + (dPrevToE ? dPrevToE.m : 0);
+        }
+
+        // ── Contrainte T_next : fin(T_new) + dist(dernier_magasin_new, entrepôt_T_next) ≤ début(T_next) ──
+        var maxStart = Infinity;
+        if (T_next) {
+          var dNewToNext = lastStoreNew
+              ? _afOpt_getDist(dm, lastStoreNew, T_next.entrepot) : null;
+          maxStart = T_next.offsetMin - (dNewToNext ? dNewToNext.m : 0) - SETUP - best.duree - DECROCHE;
+        }
+
+        if (maxStart < minStart) continue;
+
+        // Intersection avec les intervalles valides de la tournée candidate
+        var candidate = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP, minStart);
+        if (candidate === null || candidate > maxStart) continue;
+
+        // Retenir le meilleur emplacement (démarrage le plus tôt possible)
+        if (offsetMin === null || candidate < offsetMin) {
+          offsetMin       = candidate;
+          targetModId     = mod.modId;
+          targetMod       = mod;
+          targetInsertIdx = gi;
+        }
+      }
+    }
+  }
+
+  // ── Étape 3 : créer un nouveau module ─────────────────────────────────────
   if (offsetMin === null) {
     offsetMin = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP);
   }
 
+  // ── Étape 4 : aucun créneau disponible ───────────────────────────────────
   if (offsetMin === null) {
     console.warn('[afOpt] placerGroupe: aucun créneau libre —',
       groupe.famille, groupe.entrepot,
@@ -8102,33 +8190,6 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
   AppState.planLocal[tid] = _fluxOrdonnes;
   _afOpt_autoCreatedTids.push(tid);
 
-  var modId;
-  if (targetMod) {
-    // Ajouter au module existant (même entrepôt, pas de superposition temporelle)
-    modId = targetModId;
-    for (var ami = 0; ami < AppState.modules.length; ami++) {
-      if (AppState.modules[ami].id === modId) {
-        AppState.modules[ami].tours.push(tid);
-        break;
-      }
-    }
-    console.log('[afOpt] placerGroupe: réutilise module', modId,
-      '(entrepôt', groupe.entrepot + ', offset=' + offsetMin + ')');
-  } else {
-    // Créer un nouveau module
-    var nums = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g, '')) || 0; });
-    var nxt  = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
-    modId = 'M' + nxt;
-    AppState.modules.push({ id: modId, tours: [tid] });
-    _afOpt_autoCreatedModIds.push(modId);
-  }
-
-  AppState.modulesOffsets[modId + '_' + tid] = offsetMin;
-
-  var dRet = best.arrets.length
-    ? _afOpt_getDist(dm, best.arrets[best.arrets.length - 1].magasin, groupe.entrepot)
-    : null;
-
   var tourEntry = {
     tid:           tid,
     offsetMin:     offsetMin,
@@ -8138,15 +8199,65 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
     arrets:        best.arrets,
     deliveryTimes: best.deliveryTimes,
     hasPause:      best.hasPause || false,
-    _retourDuree:  dRet ? dRet.m : 0,
+    _retourDuree:  retourDureeNew,
     _setup:        SETUP
   };
 
+  var modId;
   if (targetMod) {
-    targetMod.tours.push(tourEntry);
+    modId = targetModId;
+
+    // Insérer dans _afOpt_modulesInternes à la position targetInsertIdx
+    targetMod.tours.splice(targetInsertIdx, 0, tourEntry);
+
+    // Insérer le tid dans AppState.modules à la même position
+    for (var ami = 0; ami < AppState.modules.length; ami++) {
+      if (AppState.modules[ami].id === modId) {
+        AppState.modules[ami].tours.splice(targetInsertIdx, 0, tid);
+        break;
+      }
+    }
+
+    console.log('[afOpt] placerGroupe: insère dans module', modId,
+      'pos', targetInsertIdx, '(entrepôt', groupe.entrepot + ', offset=' + offsetMin + ')');
+
+    // ── 5.3b : Mettre à jour l'entrepôt de retour de T_prev ─────────────
+    // Après splice : tours[targetInsertIdx] = tourEntry, tours[targetInsertIdx-1] = T_prev
+    if (targetInsertIdx > 0) {
+      var prevEntry   = targetMod.tours[targetInsertIdx - 1];
+      var lastStorePv = prevEntry.arrets.length
+          ? prevEntry.arrets[prevEntry.arrets.length - 1].magasin : null;
+      if (lastStorePv) {
+        var dPvToE    = _afOpt_getDist(dm, lastStorePv, groupe.entrepot);
+        var newRetDur = dPvToE ? dPvToE.m : 0;
+        prevEntry.finMin       = prevEntry.finMin - prevEntry._retourDuree + newRetDur;
+        prevEntry._retourDuree = newRetDur;
+        prevEntry.retour       = groupe.entrepot;
+        if (!AppState.tourneeOverrides) AppState.tourneeOverrides = {};
+        if (!AppState.tourneeOverrides[prevEntry.tid]) AppState.tourneeOverrides[prevEntry.tid] = {};
+        AppState.tourneeOverrides[prevEntry.tid].retour = groupe.entrepot;
+      }
+    }
   } else {
+    // Créer un nouveau module
+    var nums = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g, '')) || 0; });
+    var nxt  = (nums.length ? Math.max.apply(null, nums) : 0) + 1;
+    modId = 'M' + nxt;
+    AppState.modules.push({ id: modId, tours: [tid] });
+    _afOpt_autoCreatedModIds.push(modId);
     _afOpt_modulesInternes.push({ modId: modId, tours: [tourEntry] });
   }
+
+  AppState.modulesOffsets[modId + '_' + tid] = offsetMin;
+
+  // ── 6.2 : Appliquer les règles de découpe des shifts ─────────────────────
+  var _intMod = null;
+  for (var _smi = 0; _smi < _afOpt_modulesInternes.length; _smi++) {
+    if (_afOpt_modulesInternes[_smi].modId === modId) { _intMod = _afOpt_modulesInternes[_smi]; break; }
+  }
+  if (_intMod) _afOpt_appliquerReglesShift(modId, _intMod);
+
+  // ── 5.3a : Enregistrer les créneaux d'occupation ─────────────────────────
   _afOpt_enregistrerSlots(tourEntry, SETUP);
 
   return { placed: true, tid: tid, modId: modId, offsetMin: offsetMin };
@@ -8368,36 +8479,55 @@ function _afOpt_resolveNavettes(unplanned, finalStates, dm, jour) {
       };
 
       var best = _afOpt_findBestPermutation(fakeGroupe, dm, jour);
+
+      // Si le groupe de repli échoue (fenêtres incompatibles, cartographie partielle…),
+      // tenter chaque flux individuellement comme tournée solo.
+      var fluxATraiter = best ? [{ groupe: fakeGroupe, best: best }] : [];
       if (!best) {
-        console.warn('[afOpt] resolveNavettes: aucune permutation valide pour groupe de repli —',
-          grp.famille, grp.entrepot,
-          b.flux.map(function(f) { return f.magasin; }).join(', '));
-        return;
+        b.flux.forEach(function(f) {
+          var soloGroupe = {
+            famille:  grp.famille,
+            entrepot: grp.entrepot,
+            zone:     grp.entrepot,
+            utTotal:  f.utAffecte || f.ut,
+            flux:     [f]
+          };
+          var soloBest = _afOpt_findBestPermutation(soloGroupe, dm, jour);
+          if (!soloBest) {
+            console.warn('[afOpt] resolveNavettes: flux solo non planifiable —',
+              f.magasin, '/', grp.famille, '/', grp.entrepot);
+            return;
+          }
+          fluxATraiter.push({ groupe: soloGroupe, best: soloBest });
+        });
       }
 
-      fakeGroupe.best = best;
-      var result = _afOpt_placerGroupe(fakeGroupe, best, dm, jour);
-      if (result.placed) {
-        console.log('[afOpt] resolveNavettes: groupe de repli placé —', result.tid);
-        // Ajouter à finalStates pour la finalisation
-        var flux      = AppState.planLocal[result.tid] || [];
-        var tData     = (AppState.tourneesLocales || []).filter(function(t) {
-          return String(t[0]) === result.tid;
-        })[0];
-        finalStates.push({
-          tid:       result.tid,
-          modId:     result.modId,
-          entrepot:  tData ? tData[2] : grp.entrepot,
-          retour:    tData ? tData[2] : grp.entrepot,
-          flux:      flux,
-          offsetMin: result.offsetMin,
-          chgtDur:   tData ? parseFloat(tData[4]) || 0 : 0,
-          admDur:    tData ? parseFloat(tData[3]) || 15 : 15
-        });
-      } else {
-        console.warn('[afOpt] resolveNavettes: groupe de repli non plaçable —',
-          result.reason, grp.famille, grp.entrepot);
-      }
+      fluxATraiter.forEach(function(item) {
+        item.groupe.best = item.best;
+        var result = _afOpt_placerGroupe(item.groupe, item.best, dm, jour);
+        if (result.placed) {
+          console.log('[afOpt] resolveNavettes: repli placé —', result.tid,
+            '(magasins:', item.groupe.flux.map(function(f) { return f.magasin; }).join(', ') + ')');
+          var fluxT = AppState.planLocal[result.tid] || [];
+          var tData = (AppState.tourneesLocales || []).filter(function(t) {
+            return String(t[0]) === result.tid;
+          })[0];
+          finalStates.push({
+            tid:       result.tid,
+            modId:     result.modId,
+            entrepot:  tData ? tData[2] : grp.entrepot,
+            retour:    tData ? tData[2] : grp.entrepot,
+            flux:      fluxT,
+            offsetMin: result.offsetMin,
+            chgtDur:   tData ? parseFloat(tData[4]) || 0 : 0,
+            admDur:    tData ? parseFloat(tData[3]) || 15 : 15
+          });
+        } else {
+          console.warn('[afOpt] resolveNavettes: repli non plaçable —',
+            result.reason, grp.famille, grp.entrepot,
+            item.groupe.flux.map(function(f) { return f.magasin; }).join(', '));
+        }
+      });
     });
   });
 }
@@ -8481,7 +8611,14 @@ function autoFillOptimise() {
     try {
       var groupesTries     = _afOpt_trierGroupes(_opt_groupesValides);
       var groupesNonPlaces = _opt_groupesInvalides.slice();
-      var unplanned        = [];
+      // Les flux rejetés en Phase 1.2b (duree_excedee) et Phase 1.4 (permutation_invalide)
+      // doivent également passer par resolveNavettes pour tentative de repli individuel.
+      var unplanned = [];
+      _opt_groupesInvalides.forEach(function(inv) {
+        if (inv.groupe && inv.groupe.flux) {
+          unplanned = unplanned.concat(inv.groupe.flux);
+        }
+      });
 
       _afOpt_updateProgress(0.30, 'Phase 1 — Placement dans les modules…');
       console.log('[afOpt] Phase 1.5 — tri OK, ' + groupesTries.length + ' groupes valides');
