@@ -870,13 +870,52 @@
     }
     .pause-parallele-bar {
       position: absolute;
-      height: 5px;
+      height: 8px;
       background: #FF6F00;
       border-radius: 2px;
       opacity: 0.85;
-      pointer-events: none;
-      z-index: 4;
+      cursor: pointer;
+      z-index: 10;
     }
+    .pause-parallele-bar:hover { opacity: 1; box-shadow: 0 0 0 2px rgba(255,111,0,0.4); }
+    .pp-pos-menu {
+      position: fixed;
+      background: #fff;
+      border: 1px solid #B0BEC5;
+      border-radius: 6px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.2);
+      z-index: 9999;
+      overflow: hidden;
+      font-family: inherit;
+      font-size: 12px;
+      min-width: 160px;
+    }
+    .pp-pos-menu-title {
+      padding: 5px 12px 3px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #90A4AE;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-bottom: 1px solid #ECEFF1;
+    }
+    .pp-pos-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      padding: 7px 12px;
+      text-align: left;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: #37474F;
+      white-space: nowrap;
+      font-size: 12px;
+      font-family: inherit;
+    }
+    .pp-pos-btn:hover { background: #ECEFF1; }
+    .pp-pos-btn.active { font-weight: 700; color: #E65100; }
     .mag-plage-ferme {
       position: absolute; top: 0; bottom: 0;
       background: rgba(244,67,54,0.11); pointer-events: none; z-index: 0;
@@ -2112,7 +2151,7 @@ function validerTournee(params) {
 // Retourne une liste de blocs {type, debut (min), duree (min), label, color, arret?, idx?}
 // debutMin = minutes absolues depuis minuit (0-1800 pour le Gantt 0h-30h)
 // _initDrive/_initService : état conducteur hérité de la tournée précédente (chaînage cross-tournée)
-function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retourLieu, hookDur, lieuDepart, _initDrive, _initService, manualBreaks, _initPauseServiceFaite, _initBonusConduiteUsed, _chauffeurSplits) {
+function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retourLieu, hookDur, lieuDepart, _initDrive, _initService, manualBreaks, _initPauseServiceFaite, _initBonusConduiteUsed, _chauffeurSplits, parallelConvertMap) {
   var LIMITE_C = 270; // 4h30 de conduite continue
   var LIMITE_S = 360; // 6h00 de service continu
   retourLieu = retourLieu || 'ENTREPOT';
@@ -2165,14 +2204,20 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
     var _hbLbl = type === 'conduite'
       ? (mbMeta && mbMeta.splitPart
           ? '⏸ Pause conduite — ' + actualDur + ' min (fragment ' + mbMeta.splitPart + '/2)'
-          : '⏸ Pause conduite — ' + actualDur + ' min (4h30)')
-      : '⏸ Pause service — 30 min (6h)';
+          : mbMeta && mbMeta.isParallelConvert
+            ? '⏸ Pause conduite — ' + actualDur + ' min (insérée)'
+            : '⏸ Pause conduite — ' + actualDur + ' min (4h30)')
+      : (mbMeta && mbMeta.isParallelConvert
+          ? '⏸ Pause service — 30 min (insérée)'
+          : '⏸ Pause service — 30 min (6h)');
     blocs.push({
       type: 'pause_chauffeur', debut: curseur, duree: actualDur,
       label: _hbLbl,
       color: type === 'conduite' ? '#C62828' : '#E65100', _pauseType: type,
       _splitId: mbMeta ? mbMeta.splitId : undefined,
-      _splitPart: mbMeta ? mbMeta.splitPart : undefined
+      _splitPart: mbMeta ? mbMeta.splitPart : undefined,
+      _isParallelConvert: mbMeta ? !!mbMeta.isParallelConvert : false,
+      _convertAt: mbMeta ? mbMeta.convertAt : undefined
     });
     curseur += actualDur;
     if (type === 'conduite') { driveMin = 0; serviceMin = 0; } // reset asymétrique
@@ -2180,10 +2225,10 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
   }
 
   // Pause parallèle : pendant livraison/emballage, sans impact sur le planning
-  function parallelBreak(type, dur, slotAt) {
+  function parallelBreak(type, dur, slotAt, slotDur) {
     var actualDur = (type === 'conduite') ? getDurConduite() : dur;
     if (type === 'conduite' && actualDur < 45 && pauseServiceFaite) bonusPauseCondUsed = true;
-    _breaks.push({ at: slotAt, dur: actualDur, type: type, parallel: true });
+    _breaks.push({ at: slotAt, dur: actualDur, type: type, parallel: true, slotDur: slotDur || 0 });
     if (type === 'conduite') { driveMin = 0; serviceMin = 0; }
     else                     { serviceMin = 0; pauseServiceFaite = true; }
   }
@@ -2203,17 +2248,42 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
   }
 
   // Après service mou (livraison/emballage) : pause parallèle si bloc assez long, dure sinon.
-  // slotDur = durée du bloc d'accueil ; si trop court pour contenir la pause → pause dure après le bloc.
+  // Appelé APRÈS que le bloc (livraison/emballage) a déjà été poussé dans blocs et curseur avancé.
+  // parallelConvertMap = { '<insertionTime>': 'amont'|'aval' } pour convertir en blocs séquentiels.
+  //   'amont' : insertionTime = slotAt          → pause insérée AVANT le bloc (pop/rewind/hardBreak/repush)
+  //   'aval'  : insertionTime = slotAt+slotDur  → pause insérée APRÈS le bloc (curseur déjà après)
   function checkParallelBreaks(slotAt, slotDur) {
+    var _pMap = parallelConvertMap || {};
+    var _convMode = _pMap[String(slotAt)]            === 'amont' ? 'amont'
+                  : _pMap[String(slotAt + slotDur)]  === 'aval'  ? 'aval'
+                  : null;
+
     var iter = 0;
     while (serviceMin >= LIMITE_S && iter++ < 3) {
       var opt = driveMin >= 210;
       var brkDur = opt ? getDurConduite() : 30;
-      if (slotDur >= brkDur) {
-        parallelBreak(opt ? 'conduite' : 'service', brkDur, slotAt);
+      var brkType = opt ? 'conduite' : 'service';
+
+      if (_convMode === 'amont' && slotDur >= brkDur) {
+        // Insérer la pause AVANT le bloc de livraison/emballage.
+        // Le bloc est déjà dans blocs et curseur l'a dépassé → on l'extrait, recule, insère, remet.
+        var _savedBloc = blocs.pop();
+        curseur   -= slotDur;
+        serviceMin -= slotDur;
+        hardBreak(brkType, brkDur, { isParallelConvert: true, convertAt: slotAt });
+        _savedBloc.debut = curseur;
+        blocs.push(_savedBloc);
+        curseur    += slotDur;
+        serviceMin += slotDur;
+      } else if (_convMode === 'aval' && slotDur >= brkDur) {
+        // Insérer la pause APRÈS le bloc : curseur est déjà positionné après le bloc.
+        hardBreak(brkType, brkDur, { isParallelConvert: true, convertAt: slotAt + slotDur });
+      } else if (slotDur >= brkDur) {
+        // Pas de conversion demandée — pause parallèle classique
+        parallelBreak(brkType, brkDur, slotAt, slotDur);
       } else {
         // Bloc trop court : pause dure insérée juste après le bloc (avant le prochain trajet)
-        hardBreak(opt ? 'conduite' : 'service', brkDur);
+        hardBreak(brkType, brkDur);
       }
     }
   }
@@ -2844,7 +2914,8 @@ var AppState = {
     magasins: null      // null = pas de filtre ; [] = aucun magasin sélectionné ; [...] = filtre actif
   },
   chauffeurSplits: {},  // { 'M1_T1': [{atMin, entrepot}] } — coupures chauffeur intra-tournée
-  _cisailleMode:   false // outil ciseaux actif
+  _cisailleMode:   false, // outil ciseaux actif
+  parallelBreakConvert: {}  // { 'modId_tid': { '<insertionTime>': 'amont'|'aval' } } — conversion pauses parallèles en blocs séquentiels
 };
 var _navFluxPending = null; // flux en attente de confirmation dans modal-navette-flux
 
@@ -5506,6 +5577,78 @@ function rendreShiftGantt(track, shifts, PPM, debutH, modId, allBoundaries) {
 //  • Segment hachuré = chargement avant arrivée tracteur
 //  • Outline rouge = chevauchement temps-tracteur
 // ══════════════════════════════════════════════════════
+// ── Menu de positionnement des pauses parallèles (amont / aval du bloc) ──
+// origAt   = slotAt (début du bloc de livraison/emballage)
+// slotDur  = durée du bloc d'accueil
+// brkDur   = durée de la pause
+function _afficherMenuPauseParallele(e, modId, tid, origAt, slotDur, brkDur) {
+  var existing = document.getElementById('pp-pos-menu');
+  if (existing) existing.remove();
+
+  var _convMap = ((AppState.parallelBreakConvert || {})[modId + '_' + tid]) || {};
+  var _keyAmont = String(origAt);
+  var _keyAval  = String(origAt + slotDur);
+  var ppPos = _convMap[_keyAmont] === 'amont' ? 'amont'
+            : _convMap[_keyAval]  === 'aval'  ? 'aval'
+            : 'parallele';
+
+  var menu = document.createElement('div');
+  menu.id = 'pp-pos-menu';
+  menu.className = 'pp-pos-menu';
+
+  var title = document.createElement('div');
+  title.className = 'pp-pos-menu-title';
+  title.textContent = 'Insertion de la pause';
+  menu.appendChild(title);
+
+  function makeBtn(label, pos, icon) {
+    var btn = document.createElement('button');
+    btn.className = 'pp-pos-btn' + (ppPos === pos ? ' active' : '');
+    btn.innerHTML = icon + ' ' + label + (ppPos === pos ? ' ✓' : '');
+    btn.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      if (!AppState.parallelBreakConvert) AppState.parallelBreakConvert = {};
+      var key = modId + '_' + tid;
+      if (!AppState.parallelBreakConvert[key]) AppState.parallelBreakConvert[key] = {};
+      // Effacer les deux clés possibles
+      delete AppState.parallelBreakConvert[key][_keyAmont];
+      delete AppState.parallelBreakConvert[key][_keyAval];
+      if (pos === 'amont') {
+        AppState.parallelBreakConvert[key][_keyAmont] = 'amont';
+      } else if (pos === 'aval') {
+        AppState.parallelBreakConvert[key][_keyAval] = 'aval';
+      }
+      // pos === 'parallele' : les deux clés ont été effacées → retour en pause parallèle
+      menu.remove();
+      document.removeEventListener('click', onOutside, true);
+      if (AppState.donnees) rendreGantt(AppState.donnees);
+    });
+    return btn;
+  }
+
+  menu.appendChild(makeBtn('En parallèle du bloc', 'parallele', '⇌'));
+  menu.appendChild(makeBtn('En amont du bloc',     'amont',     '◀'));
+  menu.appendChild(makeBtn('En aval du bloc',      'aval',      '▶'));
+  document.body.appendChild(menu);
+
+  var rect = e.target.getBoundingClientRect();
+  menu.style.left = rect.left + 'px';
+  menu.style.top  = (rect.bottom + 4) + 'px';
+  setTimeout(function() {
+    var mR = menu.getBoundingClientRect();
+    if (mR.right  > window.innerWidth)  menu.style.left = Math.max(4, window.innerWidth  - mR.width  - 8) + 'px';
+    if (mR.bottom > window.innerHeight) menu.style.top  = (rect.top - mR.height - 4) + 'px';
+  }, 0);
+
+  function onOutside(ev) {
+    if (!menu.contains(ev.target)) {
+      menu.remove();
+      document.removeEventListener('click', onOutside, true);
+    }
+  }
+  setTimeout(function() { document.addEventListener('click', onOutside, true); }, 0);
+}
+
 function rendreGantt(data) {
   if (!data) return;
   AppState._distManquants = {};
@@ -5831,7 +5974,8 @@ function rendreGantt(data) {
         });
       }
       var _chauffeurSplitsForTid = ((AppState.chauffeurSplits || {})[mod.id + '_' + tid] || []).slice();
-      var blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, manualBreaksForTid, driverPSF, driverBCU, _chauffeurSplitsForTid);
+      var _convertMapForTid = ((AppState.parallelBreakConvert || {})[mod.id + '_' + tid]) || {};
+      var blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, manualBreaksForTid, driverPSF, driverBCU, _chauffeurSplitsForTid, _convertMapForTid);
       // Nettoyer les overrides non injectés (ex : position tombée dans un bloc livraison)
       if (blocs._injectedMBAt && allPauseOvs.length > 0) {
         var _inj = blocs._injectedMBAt;
@@ -5876,10 +6020,11 @@ function rendreGantt(data) {
           if (_needsRebloc) {
             // Recalculer les blocs avec la position corrigée du fragment 2
             var _mbFixed = _cleanOvs.filter(function(o) { return !o.gap; });
-            blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, _mbFixed, driverPSF, driverBCU);
+            blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, _mbFixed, driverPSF, driverBCU, _chauffeurSplitsForTid, _convertMapForTid);
           }
         }
       }
+
       // Chaîner l'état conducteur pour la tournée suivante
       driverDrive   = blocs._finalDrive             || 0;
       driverService = blocs._finalService           || 0;
@@ -6239,13 +6384,17 @@ function rendreGantt(data) {
           if (bloc.type === 'pause_chauffeur') {
             segEl.style.cursor = 'w-resize';
             segEl.style.pointerEvents = 'auto';
-            var _isSplitFrag = !!bloc._splitId;
+            var _isSplitFrag    = !!bloc._splitId;
+            var _isParConv      = !!bloc._isParallelConvert;
             var _tipSuffix = _isSplitFrag
               ? '\nGlisser ← · Double-clic pour réinitialiser la scission'
-              : '\nGlisser ← pour avancer · Double-clic pour réinitialiser';
+              : _isParConv
+                ? '\nDouble-clic pour revenir en pause parallèle'
+                : '\nGlisser ← pour avancer · Double-clic pour réinitialiser';
             segEl.setAttribute('data-gtip', bloc.label + _tipSuffix);
-            (function(mId, tId, bAt, bType, bLeft, tRS, gMinAt, bSplitId, bSplitPart, bDur) {
+            (function(mId, tId, bAt, bType, bLeft, tRS, gMinAt, bSplitId, bSplitPart, bDur, bIsParConv, bConvAt) {
               segEl.addEventListener('mousedown', function(e) {
+                if (bIsParConv) return; // blocs convertis non déplaçables
                 e.preventDefault(); e.stopPropagation();
                 AppState._pauseDragState = {
                   modId: mId, tid: tId, origAt: bAt, type: bType,
@@ -6258,6 +6407,14 @@ function rendreGantt(data) {
               segEl.addEventListener('dblclick', function(e) {
                 e.stopPropagation();
                 var key = mId + '_' + tId;
+                if (bIsParConv) {
+                  // Revert : supprimer la clé de conversion → retour en pause parallèle
+                  if (AppState.parallelBreakConvert && AppState.parallelBreakConvert[key]) {
+                    delete AppState.parallelBreakConvert[key][String(bConvAt)];
+                  }
+                  if (AppState.donnees) rendreGantt(AppState.donnees);
+                  return;
+                }
                 if (!AppState.pauseOverrides) return;
                 if (!AppState.pauseOverrides[key]) return;
                 if (bSplitId) {
@@ -6287,7 +6444,7 @@ function rendreGantt(data) {
                 });
                 segEl.appendChild(btnSplit);
               }
-            })(mod.id, tid, bloc.debut, bloc._pauseType || 'conduite', barLeft, tractorRouteStart, gapMinAt, bloc._splitId, bloc._splitPart, bloc.duree);
+            })(mod.id, tid, bloc.debut, bloc._pauseType || 'conduite', barLeft, tractorRouteStart, gapMinAt, bloc._splitId, bloc._splitPart, bloc.duree, !!bloc._isParallelConvert, bloc._convertAt);
           }
         }
         bar.appendChild(segEl);
@@ -6499,6 +6656,7 @@ function rendreGantt(data) {
     }
 
     // ── Pauses parallèles : barre fine orange juste sous la barre principale ──
+    // N'apparaît QUE si la pause est en mode parallèle (non convertie en bloc séquentiel).
     var PAUSE_PAR_TOP = BAR_TOP0 + BAR_H + 3;
     toursOrdonnes.forEach(function(tid) {
       var bM = blocsMap[tid];
@@ -6511,7 +6669,16 @@ function rendreGantt(data) {
         ppDiv.style.width  = Math.max(brk.dur * PPM, 6) + 'px';
         ppDiv.style.top    = PAUSE_PAR_TOP + 'px';
         ppDiv.title = (brk.type === 'conduite' ? '⏸ Pause conduite parallèle' : '⏸ Pause service parallèle')
-          + ' — ' + brk.dur + 'min  (' + minutesVersHeure(brk.at) + ' → ' + minutesVersHeure(brk.at + brk.dur) + ')';
+          + ' — ' + brk.dur + 'min  (' + minutesVersHeure(brk.at) + ' → ' + minutesVersHeure(brk.at + brk.dur) + ')'
+          + (brk.slotDur ? '\nCliquer pour insérer en amont ou en aval du bloc' : '');
+        if (brk.slotDur) {
+          (function(mId, tId, origAt, sDur, bDur) {
+            ppDiv.addEventListener('click', function(e) {
+              e.stopPropagation();
+              _afficherMenuPauseParallele(e, mId, tId, origAt, sDur, bDur);
+            });
+          })(mod.id, tid, brk.at, brk.slotDur, brk.dur);
+        }
         track.appendChild(ppDiv);
       });
     });
@@ -9131,6 +9298,7 @@ function _buildSessionObject() {
     fluxDerivesNavette:  AppState.fluxDerivesNavette  || [],
     shiftSplits:         AppState.shiftSplits         || {},
     pauseOverrides:      AppState.pauseOverrides       || {},
+    parallelBreakConvert: AppState.parallelBreakConvert || {},
     kpiParams:           AppState.kpiParams           || {}
   };
 }
@@ -9190,9 +9358,11 @@ function restaurerAutoSave() {
     AppState.navettesLibres      = session.navettesLibres      || [];
     AppState.fluxNavettes        = session.fluxNavettes        || [];
     AppState.fluxDerivesNavette  = session.fluxDerivesNavette  || [];
-    if (session.shiftSplits)    AppState.shiftSplits    = session.shiftSplits;
-    if (session.pauseOverrides) AppState.pauseOverrides = session.pauseOverrides;
-    if (session.kpiParams)      AppState.kpiParams      = session.kpiParams;
+    if (session.shiftSplits)      AppState.shiftSplits      = session.shiftSplits;
+    if (session.pauseOverrides)   AppState.pauseOverrides   = session.pauseOverrides;
+    if (session.parallelBreakConvert) AppState.parallelBreakConvert = session.parallelBreakConvert;
+    else if (session.parallelBreakPos) AppState.parallelBreakConvert = session.parallelBreakPos; // migration
+    if (session.kpiParams)        AppState.kpiParams        = session.kpiParams;
     if (session.jourActif) {
       AppState.jourActif = session.jourActif;
       var selJour = document.getElementById('sel-jour');
@@ -9299,9 +9469,11 @@ function onSessionImportee(input) {
       AppState.navettesLibres       = session.navettesLibres       || [];
       AppState.fluxNavettes         = session.fluxNavettes         || [];
       AppState.fluxDerivesNavette   = session.fluxDerivesNavette   || [];
-      if (session.shiftSplits)    AppState.shiftSplits    = session.shiftSplits;
-      if (session.pauseOverrides) AppState.pauseOverrides = session.pauseOverrides;
-      if (session.kpiParams)      AppState.kpiParams      = session.kpiParams;
+      if (session.shiftSplits)       AppState.shiftSplits       = session.shiftSplits;
+      if (session.pauseOverrides)    AppState.pauseOverrides    = session.pauseOverrides;
+      if (session.parallelBreakConvert) AppState.parallelBreakConvert = session.parallelBreakConvert;
+      else if (session.parallelBreakPos) AppState.parallelBreakConvert = session.parallelBreakPos; // migration
+      if (session.kpiParams)         AppState.kpiParams         = session.kpiParams;
       if (session.jourActif) {
         AppState.jourActif = session.jourActif;
         var selJour = document.getElementById('sel-jour');
