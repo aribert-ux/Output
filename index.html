@@ -9281,9 +9281,11 @@ var _LS_KEY = 'auchan_transport_autosave';
 
 function _buildSessionObject() {
   return {
-    version:          '2.5',
+    version:          '2.6',
     exportedAt:       new Date().toISOString(),
     jourActif:        AppState.jourActif,
+    vueActive:        AppState.vueActive,
+    PPM:              AppState.PPM,
     planLocal:        AppState.planLocal,
     fluxLocaux:       AppState.fluxLocaux,
     modules:          AppState.modules,
@@ -9297,8 +9299,10 @@ function _buildSessionObject() {
     fluxNavettes:        AppState.fluxNavettes        || [],
     fluxDerivesNavette:  AppState.fluxDerivesNavette  || [],
     shiftSplits:         AppState.shiftSplits         || {},
-    pauseOverrides:      AppState.pauseOverrides       || {},
+    chauffeurSplits:     AppState.chauffeurSplits     || {},
+    pauseOverrides:      AppState.pauseOverrides      || {},
     parallelBreakConvert: AppState.parallelBreakConvert || {},
+    ganttMagasinFiltres: AppState.ganttMagasinFiltres || {},
     kpiParams:           AppState.kpiParams           || {}
   };
 }
@@ -9358,11 +9362,18 @@ function restaurerAutoSave() {
     AppState.navettesLibres      = session.navettesLibres      || [];
     AppState.fluxNavettes        = session.fluxNavettes        || [];
     AppState.fluxDerivesNavette  = session.fluxDerivesNavette  || [];
-    if (session.shiftSplits)      AppState.shiftSplits      = session.shiftSplits;
-    if (session.pauseOverrides)   AppState.pauseOverrides   = session.pauseOverrides;
+    if (session.shiftSplits)         AppState.shiftSplits         = session.shiftSplits;
+    if (session.chauffeurSplits)     AppState.chauffeurSplits     = session.chauffeurSplits;
+    if (session.pauseOverrides)      AppState.pauseOverrides      = session.pauseOverrides;
     if (session.parallelBreakConvert) AppState.parallelBreakConvert = session.parallelBreakConvert;
-    else if (session.parallelBreakPos) AppState.parallelBreakConvert = session.parallelBreakPos; // migration
-    if (session.kpiParams)        AppState.kpiParams        = session.kpiParams;
+    else if (session.parallelBreakPos) AppState.parallelBreakConvert = session.parallelBreakPos; // migration v2.5
+    if (session.ganttMagasinFiltres) AppState.ganttMagasinFiltres = session.ganttMagasinFiltres;
+    if (session.kpiParams)           AppState.kpiParams           = session.kpiParams;
+    if (session.PPM && session.PPM >= 1 && session.PPM <= 8) {
+      AppState.PPM = session.PPM;
+      var zoomSel = document.getElementById('gantt-zoom');
+      if (zoomSel) zoomSel.value = session.PPM;
+    }
     if (session.jourActif) {
       AppState.jourActif = session.jourActif;
       var selJour = document.getElementById('sel-jour');
@@ -9372,6 +9383,7 @@ function restaurerAutoSave() {
     var nbFlux = Object.values(AppState.planLocal).reduce(function(s, a) { return s + a.length; }, 0);
     afficherToast('✅ Auto-sauvegarde restaurée — ' + nbFlux + ' flux · ' + AppState.modules.length + ' modules', 'succes');
     demarrerAutoSave();
+    if (session.vueActive) basculerVue(session.vueActive);
     if (AppState.donnees) {
       rendrePlanningFlux(AppState.donnees);
       rendreGantt(AppState.donnees);
@@ -9469,11 +9481,18 @@ function onSessionImportee(input) {
       AppState.navettesLibres       = session.navettesLibres       || [];
       AppState.fluxNavettes         = session.fluxNavettes         || [];
       AppState.fluxDerivesNavette   = session.fluxDerivesNavette   || [];
-      if (session.shiftSplits)       AppState.shiftSplits       = session.shiftSplits;
-      if (session.pauseOverrides)    AppState.pauseOverrides    = session.pauseOverrides;
+      if (session.shiftSplits)         AppState.shiftSplits         = session.shiftSplits;
+      if (session.chauffeurSplits)     AppState.chauffeurSplits     = session.chauffeurSplits;
+      if (session.pauseOverrides)      AppState.pauseOverrides      = session.pauseOverrides;
       if (session.parallelBreakConvert) AppState.parallelBreakConvert = session.parallelBreakConvert;
-      else if (session.parallelBreakPos) AppState.parallelBreakConvert = session.parallelBreakPos; // migration
-      if (session.kpiParams)         AppState.kpiParams         = session.kpiParams;
+      else if (session.parallelBreakPos) AppState.parallelBreakConvert = session.parallelBreakPos; // migration v2.5
+      if (session.ganttMagasinFiltres) AppState.ganttMagasinFiltres = session.ganttMagasinFiltres;
+      if (session.kpiParams)           AppState.kpiParams           = session.kpiParams;
+      if (session.PPM && session.PPM >= 1 && session.PPM <= 8) {
+        AppState.PPM = session.PPM;
+        var zoomSel = document.getElementById('gantt-zoom');
+        if (zoomSel) zoomSel.value = session.PPM;
+      }
       if (session.jourActif) {
         AppState.jourActif = session.jourActif;
         var selJour = document.getElementById('sel-jour');
@@ -9482,11 +9501,12 @@ function onSessionImportee(input) {
       var nbFlux = Object.values(AppState.planLocal).reduce(function(s, arr) { return s + arr.length; }, 0);
       afficherToast('✅ Session importée — ' + nbFlux + ' flux · ' + AppState.modules.length + ' modules', 'succes');
       demarrerAutoSave();
+      if (session.vueActive) basculerVue(session.vueActive);
       if (AppState.donnees) {
         rendrePlanningFlux(AppState.donnees);
         rendreGantt(AppState.donnees);
         if (AppState.vueActive === 'remorques') rendreGanttRemorques(AppState.donnees);
-    if (AppState.vueActive === 'magasins')  rendreGanttMagasins(AppState.donnees);
+        if (AppState.vueActive === 'magasins')  rendreGanttMagasins(AppState.donnees);
       }
     } catch(err) {
       afficherToast('❌ Erreur import session : ' + err.message, 'erreur');
