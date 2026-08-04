@@ -8234,52 +8234,46 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
   var targetInsertIdx = -1;
 
   // ── Étape 2 : chercher un emplacement dans les modules existants ──────────
-  // Une tournée avec pause RSE ne peut pas être enchaînée dans un module existant.
-  if (!best.hasPause) {
-    for (var mi = 0; mi < _afOpt_modulesInternes.length; mi++) {
-      var mod       = _afOpt_modulesInternes[mi];
-      var firstTour = mod.tours[0];
+  for (var mi = 0; mi < _afOpt_modulesInternes.length; mi++) {
+    var mod       = _afOpt_modulesInternes[mi];
+    var firstTour = mod.tours[0];
 
-      // Parcourir tous les trous : avant tours[0], entre tours consécutifs, après le dernier
-      for (var gi = 0; gi <= mod.tours.length; gi++) {
-        var T_prev = gi > 0               ? mod.tours[gi - 1] : null;
-        var T_next = gi < mod.tours.length ? mod.tours[gi]    : null;
+    // Parcourir tous les trous : avant tours[0], entre tours consécutifs, après le dernier
+    for (var gi = 0; gi <= mod.tours.length; gi++) {
+      var T_prev = gi > 0               ? mod.tours[gi - 1] : null;
+      var T_next = gi < mod.tours.length ? mod.tours[gi]    : null;
 
-        // Pas d'enchaînement immédiatement après un trajet contenant une pause RSE
-        if (T_prev && T_prev.hasPause) continue;
+      // ── Contrainte T_prev : fin effective après modification de l'entrepôt de retour ──
+      // fin_T_prev_modifiée = (finMin - _retourDuree) + dist(dernier_magasin_prev, E_new)
+      var minStart = 0;
+      if (T_prev) {
+        var lastStorePrev = T_prev.arrets.length
+            ? T_prev.arrets[T_prev.arrets.length - 1].magasin : null;
+        var dPrevToE     = lastStorePrev
+            ? _afOpt_getDist(dm, lastStorePrev, groupe.entrepot) : null;
+        minStart = T_prev.finMin - T_prev._retourDuree + (dPrevToE ? dPrevToE.m : 0);
+      }
 
-        // ── Contrainte T_prev : fin effective après modification de l'entrepôt de retour ──
-        // fin_T_prev_modifiée = (finMin - _retourDuree) + dist(dernier_magasin_prev, E_new)
-        var minStart = 0;
-        if (T_prev) {
-          var lastStorePrev = T_prev.arrets.length
-              ? T_prev.arrets[T_prev.arrets.length - 1].magasin : null;
-          var dPrevToE     = lastStorePrev
-              ? _afOpt_getDist(dm, lastStorePrev, groupe.entrepot) : null;
-          minStart = T_prev.finMin - T_prev._retourDuree + (dPrevToE ? dPrevToE.m : 0);
-        }
+      // ── Contrainte T_next : fin(T_new) + dist(dernier_magasin_new, entrepôt_T_next) ≤ début(T_next) ──
+      var maxStart = Infinity;
+      if (T_next) {
+        var dNewToNext = lastStoreNew
+            ? _afOpt_getDist(dm, lastStoreNew, T_next.entrepot) : null;
+        maxStart = T_next.offsetMin - (dNewToNext ? dNewToNext.m : 0) - SETUP - best.duree - DECROCHE;
+      }
 
-        // ── Contrainte T_next : fin(T_new) + dist(dernier_magasin_new, entrepôt_T_next) ≤ début(T_next) ──
-        var maxStart = Infinity;
-        if (T_next) {
-          var dNewToNext = lastStoreNew
-              ? _afOpt_getDist(dm, lastStoreNew, T_next.entrepot) : null;
-          maxStart = T_next.offsetMin - (dNewToNext ? dNewToNext.m : 0) - SETUP - best.duree - DECROCHE;
-        }
+      if (maxStart < minStart) continue;
 
-        if (maxStart < minStart) continue;
+      // Intersection avec les intervalles valides de la tournée candidate
+      var candidate = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP, minStart);
+      if (candidate === null || candidate > maxStart) continue;
 
-        // Intersection avec les intervalles valides de la tournée candidate
-        var candidate = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP, minStart);
-        if (candidate === null || candidate > maxStart) continue;
-
-        // Retenir le meilleur emplacement (démarrage le plus tôt possible)
-        if (offsetMin === null || candidate < offsetMin) {
-          offsetMin       = candidate;
-          targetModId     = mod.modId;
-          targetMod       = mod;
-          targetInsertIdx = gi;
-        }
+      // Retenir le meilleur emplacement (démarrage le plus tôt possible)
+      if (offsetMin === null || candidate < offsetMin) {
+        offsetMin       = candidate;
+        targetModId     = mod.modId;
+        targetMod       = mod;
+        targetInsertIdx = gi;
       }
     }
   }
