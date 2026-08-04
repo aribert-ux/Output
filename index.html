@@ -4,7 +4,7 @@
   <link rel="icon" type="image/svg+xml" href="logo.svg">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Outil de Planification Transport — Auchan</title>
+  <title>Outil de Planification Transport - Auchan</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', Arial, sans-serif; background: #F0F4F8; color: #212121; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
@@ -38,8 +38,8 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.2);
       flex-shrink: 0; z-index: 200;
     }
-    #header h1, #header h2 { font-size: 16px; font-weight: 700; margin: 0; }
-    #header .header-sub { font-size: 11px; color: #FFCDD2; margin-left: 4px; }
+    #header h1, #header h2 { font-size: clamp(11px, 1.3vw, 16px); font-weight: 700; margin: 0; }
+    #header .header-sub { font-size: clamp(9px, 1vw, 11px); color: #FFCDD2; margin-left: 4px; }
     .header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
     /* TOOLBAR */
@@ -1145,7 +1145,7 @@
      style="height: 18px; width:auto; object-fit:contain; filter:brightness(0) invert(1);">
   <div>
     <h2>Outil de Planification Transport</h2>
-    <span class="header-sub">Auchan — Région Nord</span>
+    <span class="header-sub">Auchan - Région Nord</span>
   </div>
   <div class="header-actions">
     <button class="btn btn-warning"   onclick="chargerFichierExcel()">📂 Charger Excel</button>
@@ -3131,7 +3131,26 @@ function afficherPanelTournees(modId) {
     var pctEl = document.createElement('span');
     pctEl.style.cssText = 'font-size:11px;font-weight:700;color:' + (pct >= 80 ? '#2E7D32' : '#B0BEC5');
     pctEl.textContent = pct + '%';
-    hr.appendChild(retLbl); hr.appendChild(retSel); hr.appendChild(pctEl);
+    var btnPos = document.createElement('button');
+    btnPos.className = 'pt-card-pos-btn';
+    btnPos.textContent = '📍';
+    btnPos.title = 'Calculer les positions possibles (créneaux magasins)';
+    btnPos.style.cssText = 'font-size:11px;padding:1px 3px;border:1px solid #90A4AE;border-radius:3px;background:#fff;cursor:pointer;flex-shrink:0;line-height:1';
+    (function(tId, btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (document.querySelectorAll('.valid-interval-overlay[data-tid="' + tId + '"]').length) {
+          _clearValidIntervalOverlays();
+          btn.style.background = '#fff';
+          return;
+        }
+        _clearValidIntervalOverlays();
+        document.querySelectorAll('.pt-card-pos-btn').forEach(function(b) { b.style.background = '#fff'; });
+        var ok = _showValidIntervals(tId);
+        btn.style.background = ok ? '#E0F2F1' : '#fff';
+      });
+    })(tid, btnPos);
+    hr.appendChild(btnPos); hr.appendChild(retLbl); hr.appendChild(retSel); hr.appendChild(pctEl);
 
     hdr.appendChild(hl); hdr.appendChild(hr);
     card.appendChild(hdr);
@@ -7244,6 +7263,7 @@ var _afOpt_autoCreatedTids  = [];
 var _afOpt_autoCreatedModIds = [];
 var _afOpt_storeSlots       = {};
 var _afOpt_modulesInternes  = [];
+var _opt_dmU                = {}; // distancier format underscore — accessible par _afOpt_placerGroupe
 
 var _FAMILLE_FRAIS = ['FL', 'PF'];
 var _FAMILLE_SURG  = ['SURG'];
@@ -7353,8 +7373,22 @@ function _afOpt_cleanupPreviousRun() {
   if (!AppState.planLocal)       AppState.planLocal         = {};
   if (!AppState.tourneeOverrides) AppState.tourneeOverrides = {};
 
-  // Supprimer les tournées auto précédentes
+  var jourActif = AppState.jourActif;
+
+  // Partitionner les tids : jour actif (à supprimer) vs autres jours (à conserver)
+  var tidsJourActif = [], tidsAutresJours = [];
   _afOpt_autoCreatedTids.forEach(function(tid) {
+    var tData = null;
+    (AppState.tourneesLocales || []).forEach(function(t) { if (String(t[0]) === tid) tData = t; });
+    if (tData && String(tData[7] || '') === jourActif) {
+      tidsJourActif.push(tid);
+    } else {
+      tidsAutresJours.push(tid);
+    }
+  });
+
+  // Supprimer uniquement les tournées auto du jour actif
+  tidsJourActif.forEach(function(tid) {
     if (AppState.planLocal) delete AppState.planLocal[tid];
     if (AppState.tourneesLocales) {
       AppState.tourneesLocales = AppState.tourneesLocales.filter(function(t) {
@@ -7363,16 +7397,32 @@ function _afOpt_cleanupPreviousRun() {
     }
   });
 
-  // Supprimer les modules auto précédents
+  // Supprimer uniquement les modules dont aucune tournée n'appartient à un autre jour
+  var modIdsASupprimer = [], modIdsAGarder = [];
   _afOpt_autoCreatedModIds.forEach(function(mid) {
+    var mod = (AppState.modules || []).filter(function(m) { return m.id === mid; })[0];
+    if (!mod) return;
+    var aTourAutreJour = (mod.tours || []).some(function(tid) {
+      return tidsAutresJours.indexOf(tid) >= 0;
+    });
+    if (aTourAutreJour) {
+      modIdsAGarder.push(mid);
+    } else {
+      modIdsASupprimer.push(mid);
+    }
+  });
+
+  modIdsASupprimer.forEach(function(mid) {
     AppState.modules = AppState.modules.filter(function(m) { return m.id !== mid; });
     Object.keys(AppState.modulesOffsets).forEach(function(k) {
       if (k.startsWith(mid + '_')) delete AppState.modulesOffsets[k];
     });
+    if (AppState.shiftSplits) delete AppState.shiftSplits[mid];
   });
 
-  _afOpt_autoCreatedTids   = [];
-  _afOpt_autoCreatedModIds = [];
+  // Conserver les tids/modIds des autres jours pour les futures cleanup
+  _afOpt_autoCreatedTids   = tidsAutresJours;
+  _afOpt_autoCreatedModIds = modIdsAGarder;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -7828,6 +7878,84 @@ function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDu
   return validSegments;
 }
 
+// ── Aide conception manuelle : positions possibles d'une tournée ──
+
+function _clearValidIntervalOverlays() {
+  document.querySelectorAll('.valid-interval-overlay').forEach(function(el) { el.remove(); });
+}
+
+function _showValidIntervals(tid) {
+  var flux = AppState.planLocal[tid] || [];
+  if (!flux.length) {
+    afficherToast('Aucun flux planifié pour cette tournée', 'avertissement');
+    return false;
+  }
+  if (!AppState.cartographiePlages || !Object.keys(AppState.cartographiePlages).length) {
+    afficherToast('⚠️ Cartographie non chargée', 'avertissement');
+    return false;
+  }
+
+  // Trouver le module contenant cette tournée
+  var modId = null;
+  var allMods = (AppState.moduleM0 ? [AppState.moduleM0] : []).concat(AppState.modules || []);
+  allMods.forEach(function(m) { if ((m.tours || []).indexOf(tid) >= 0) modId = m.id; });
+
+  var track = modId ? document.querySelector('.mod-track[data-modid="' + modId + '"]') : null;
+  if (!track) {
+    afficherToast('Module non visible dans le Gantt — basculez sur l\'onglet Modules', 'avertissement');
+    return false;
+  }
+
+  // Paramètres de la tournée
+  var t   = AppState.donnees ? getTourneeData(tid, AppState.donnees) : null;
+  var ov  = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
+  var chgtDur  = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+  var admDur   = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
+  var entrepot = (flux[0] && flux[0].entrepot) || (t && t[6] ? t[6].toString() : '') || 'ENTREPOT';
+  var jour     = AppState.jourActif || 'Lundi';
+
+  // Regrouper les flux consécutifs au même magasin (cohérent avec calculerPlanningGantt)
+  var arrets = [];
+  flux.forEach(function(f) {
+    var mag = f.magasin || f.lieu || '';
+    var ut  = parseFloat(f.utAffecte !== undefined ? f.utAffecte : f.ut) || 0;
+    if (arrets.length && arrets[arrets.length - 1].magasin === mag) {
+      arrets[arrets.length - 1].ut += ut;
+    } else {
+      arrets.push({ magasin: mag, marchandise: (f.marchandise || '').toUpperCase(), ut: ut });
+    }
+  });
+
+  var dm        = _afOpt_buildDistMap();
+  var intervals = _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDur);
+
+  _clearValidIntervalOverlays();
+
+  if (!intervals.length) {
+    afficherToast('⚠️ Aucune position valide pour les créneaux de ces magasins', 'avertissement');
+    return false;
+  }
+
+  var PPM    = AppState.PPM;
+  var trackH = track.offsetHeight || 90;
+  intervals.forEach(function(iv) {
+    var div = document.createElement('div');
+    div.className  = 'valid-interval-overlay';
+    div.dataset.tid = tid;
+    div.title      = minutesVersHeure(iv.debut) + ' – ' + minutesVersHeure(iv.fin);
+    div.style.cssText =
+      'position:absolute;top:0;height:' + trackH + 'px;pointer-events:none;z-index:4;' +
+      'background:rgba(0,150,136,0.22);' +
+      'border-left:2px solid rgba(0,150,136,0.8);border-right:2px solid rgba(0,150,136,0.8);' +
+      'left:' + (iv.debut * PPM) + 'px;' +
+      'width:' + Math.max(2, (iv.fin - iv.debut) * PPM) + 'px;';
+    track.appendChild(div);
+  });
+
+  afficherToast('📍 ' + intervals.length + ' plage(s) de position possible(s)', 'succes');
+  return true;
+}
+
 // ══════════════════════════════════════════════════════════════════
 // PHASE 1.4 — Permutations + meilleur ordre
 // ══════════════════════════════════════════════════════════════════
@@ -8169,15 +8297,7 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
     return { placed: false, reason: 'creneaux_satures' };
   }
 
-  var finMin    = offsetMin + SETUP + best.duree + DECROCHE;
-  var tid       = _afOpt_genTid();
-  var marc      = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
-  var chgtSaved = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 30 : 0;
-
-  if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
-  AppState.tourneesLocales.push([tid, 33, groupe.entrepot, 15, chgtSaved, 'Non', marc, jour]);
-
-  // Flux dans l'ordre de la permutation optimisée
+  // ── Flux ordonnés — construit tôt pour la vérification du finMin réel ───
   var _fluxParMag = {};
   groupe.flux.forEach(function(f) {
     if (!_fluxParMag[f.magasin]) _fluxParMag[f.magasin] = [];
@@ -8187,6 +8307,43 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
   best.permutation.forEach(function(mag) {
     (_fluxParMag[mag] || []).forEach(function(f) { _fluxOrdonnes.push(f); });
   });
+
+  // ── finMin réel via calculerPlanningGantt (même logique que rendu + outline rouge) ──
+  var _calcActualFinMin = function(off) {
+    if (!_opt_dmU || !Object.keys(_opt_dmU).length) return off + SETUP + best.duree + DECROCHE;
+    var bcs = calculerPlanningGantt(off + SETUP, _fluxOrdonnes, _opt_dmU, [], groupe.entrepot, 15, groupe.entrepot);
+    return bcs.length > 0 ? bcs[bcs.length - 1].debut + bcs[bcs.length - 1].duree
+                          : off + SETUP + best.duree + DECROCHE;
+  };
+
+  var actualFinMin = _calcActualFinMin(offsetMin);
+
+  // Si le finMin réel déborde sur T_next → annuler le placement dans ce module, créer un nouveau
+  if (targetMod && targetInsertIdx < targetMod.tours.length) {
+    var _tNextOff = targetMod.tours[targetInsertIdx].offsetMin;
+    if (actualFinMin > _tNextOff) {
+      console.warn('[afOpt] placerGroupe: actualFinMin', actualFinMin, '> T_next.offset', _tNextOff,
+        '— repli nouveau module');
+      targetMod = null; targetModId = null; targetInsertIdx = -1;
+      offsetMin = _afOpt_trouverOffsetMin(best.intervals, best.deliveryTimes, SETUP);
+      if (offsetMin === null) {
+        console.warn('[afOpt] placerGroupe: aucun créneau libre (après rejet chevauchement) —',
+          groupe.famille, groupe.entrepot,
+          groupe.flux.map(function(f) { return f.magasin; }).join(', '));
+        return { placed: false, reason: 'creneaux_satures' };
+      }
+      actualFinMin = _calcActualFinMin(offsetMin);
+    }
+  }
+
+  var finMin    = actualFinMin;
+  var tid       = _afOpt_genTid();
+  var marc      = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
+  var chgtSaved = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 30 : 0;
+
+  if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
+  AppState.tourneesLocales.push([tid, 33, groupe.entrepot, 15, chgtSaved, 'Non', marc, jour]);
+
   AppState.planLocal[tid] = _fluxOrdonnes;
   _afOpt_autoCreatedTids.push(tid);
 
@@ -8738,9 +8895,15 @@ function autoFillOptimise() {
       _afOpt_storeSlots      = {};
       _afOpt_modulesInternes = [];
       AppState.planLocal     = AppState.planLocal || {};
-      AppState.shiftSplits   = {};
+      if (!AppState.shiftSplits) AppState.shiftSplits = {};
 
       _opt_dm   = _afOpt_buildDistMap();
+      _opt_dmU  = {};
+      lireDistancierWb().forEach(function(d) {
+        if (!d || !d.f || !d.t) return;
+        _opt_dmU[d.f + '_' + d.t] = { m: d.m || 0 };
+        _opt_dmU[d.t + '_' + d.f] = { m: d.m || 0 };
+      });
       _opt_jour = AppState.jourActif;
       console.log('[afOpt] jour actif =', _opt_jour);
       (function() {
@@ -9095,18 +9258,11 @@ function validerToutesTournees() {
       }).join('  |  ');
     }
 
-    // R12 : aucune intersection entre les tournées du module
-    var r12ok = true, r12conflicts = [];
-    for (var ri12 = 0; ri12 < tourInfos.length - 1; ri12++) {
-      for (var rj12 = ri12 + 1; rj12 < tourInfos.length; rj12++) {
-        var ta12 = tourInfos[ri12], tb12 = tourInfos[rj12];
-        if (ta12.offset < tb12.finMin && tb12.offset < ta12.finMin) {
-          r12ok = false;
-          r12conflicts.push(ta12.tid + '↔' + tb12.tid);
-        }
-      }
-    }
-    var r12msg = r12ok ? 'Aucun chevauchement' : r12conflicts.join(', ') + ' se chevauchent';
+    // R12 : aucune intersection — même logique que l'outline rouge (detecterChevauchementTracteur)
+    var _r12ov  = detecterChevauchementTracteur(mod, AppState.donnees, distMapM, []);
+    var r12ok   = Object.keys(_r12ov).length === 0;
+    var r12conflicts = Object.keys(_r12ov);
+    var r12msg  = r12ok ? 'Aucun chevauchement' : r12conflicts.join(', ') + ' — chevauchement tracteur';
 
     if (!r8ok || !r9ok || !r12ok) {
       modFailCount++;
@@ -9174,7 +9330,7 @@ function afficherChecklistTournee(tid, container) {
   lireDistancierWb().forEach(function(d) { distMap[d.f+'_'+d.t] = {km:d.km, m:d.m}; });
 
   // ── R1 : Capacité ──
-  var utTotal = flux.reduce(function(s, f) { return s + (parseFloat(f.utAffecte !== undefined ? f.utAffecte : f.ut) || 0); }, 0);
+  var utTotal = Math.round(flux.reduce(function(s, f) { return s + (parseFloat(f.utAffecte !== undefined ? f.utAffecte : f.ut) || 0); }, 0) * 10) / 10;
   var r1ok = utTotal <= capacite;
   var r1msg = utTotal.toFixed(1) + ' / ' + capacite + ' UT' + (r1ok ? '' : ' — DÉPASSEMENT de ' + (utTotal - capacite).toFixed(1) + ' UT');
 
@@ -9195,12 +9351,18 @@ function afficherChecklistTournee(tid, container) {
   var r2msg = r2ok ? 'Aucune incompatibilité' : 'Incompatible : ' + incompatibles.join(', ');
 
   // ── R3 : Chargement PGC/NAL/BSA de jour ──
-  var hasPgcNuit = flux.some(function(f) {
-    var m = (f.marchandise||'').toUpperCase();
-    return ['PGC','NAL','BSA'].indexOf(m) >= 0 && offset < 6 * 60;
+  var hasPgc = flux.some(function(f) {
+    return ['PGC', 'NAL', 'BSA'].indexOf((f.marchandise||'').toUpperCase()) >= 0;
   });
-  var r3ok = !hasPgcNuit;
-  var r3msg = r3ok ? 'Chargement PGC/NAL/BSA en heure de jour' : 'Chargement avant 6h pour marchandises de jour';
+  var r3ok = true, r3msg = 'Pas de marchandise PGC/NAL/BSA';
+  if (hasPgc) {
+    var chgtDebut = _computeChargementDebut(tid);
+    var chgtFin   = chgtDebut + chgtDur;
+    r3ok  = chgtDebut >= 5.5 * 60 && chgtFin <= 22 * 60;
+    r3msg = r3ok
+      ? 'Chargement PGC de jour : ' + minutesVersHeure(chgtDebut) + '–' + minutesVersHeure(chgtFin)
+      : 'Chargement hors plage 6h–22h : ' + minutesVersHeure(chgtDebut) + '–' + minutesVersHeure(chgtFin);
+  }
 
   // ── R4 : Temps de déchargement cohérent ──
   var r4ok = flux.every(function(f) {
@@ -9210,8 +9372,12 @@ function afficherChecklistTournee(tid, container) {
   var r4msg = r4ok ? 'Temps de déchargement calculés (15/30/45 min)' : 'UT hors barème';
 
   // ── R6/R7 : Pauses réglementaires ──
-  var tractorStart = offset + chgtDur + admDur;
-  var blocs = calculerPlanningGantt(tractorStart, flux, distMap, reglesDech, retour, admDur);
+  var hasFrais = flux.some(function(f) {
+    return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase()) >= 0;
+  });
+  var entrepotDep = (flux[0] && flux[0].entrepot) || (t && t[6] ? t[6].toString() : '') || 'ENTREPOT';
+  var tractorStart = hasFrais ? (offset + chgtDur + admDur) : (offset + admDur);
+  var blocs = calculerPlanningGantt(tractorStart, flux, distMap, reglesDech, retour, admDur, entrepotDep);
   var hasPauseR6 = blocs.some(function(b) { return b.type === 'pause' && b.label.indexOf('R6') >= 0; });
   var hasPauseR7 = blocs.some(function(b) { return b.type === 'pause' && b.label.indexOf('R7') >= 0; });
   var r6ok = true; // pauses insérées automatiquement
@@ -9220,26 +9386,49 @@ function afficherChecklistTournee(tid, container) {
 
 
   // ── R10 : Créneaux horaires magasin ──
-  var creneauxOk = true, creneauxMsg = 'Créneaux horaires non vérifiés (distancier requis)';
-  if (AppState.wb) {
-    try {
-      var crenMap = chargerCreneauxMagasinsWb(AppState.wb, AppState.jourActif) || {};
-      var horsCreneaux = [];
-      blocs.forEach(function(b) {
-        if (b.type !== 'livraison' || !b.arret) return;
-        var mag = b.arret.magasin || b.arret.lieu || '';
-        var crens = crenMap[mag];
-        if (!crens || crens.length === 0) return;
-        var dansUnCreneau = crens.some(function(cr) {
-          var ouv = cr.ouvMin !== undefined ? cr.ouvMin : heureVersMinutes(cr.ouverture);
-          var fer = cr.ferMin !== undefined ? cr.ferMin : heureVersMinutes(cr.fermeture);
-          return ouv !== null && fer !== null && b.debut >= ouv && b.debut + b.duree <= fer;
-        });
-        if (!dansUnCreneau) horsCreneaux.push(mag);
-      });
-      creneauxOk = horsCreneaux.length === 0;
-      creneauxMsg = creneauxOk ? 'Toutes les livraisons dans les créneaux' : 'Hors créneaux : ' + [...new Set(horsCreneaux)].join(', ');
-    } catch(e) { creneauxMsg = 'Lecture créneaux impossible'; }
+  // Utilise AppState.cartographiePlages (même source que l'affichage Gantt).
+  var creneauxOk = true, creneauxMsg = 'Créneaux horaires non vérifiés (cartographie non chargée)';
+  var _cartoPlag = AppState.cartographiePlages || {};
+  if (Object.keys(_cartoPlag).length > 0) {
+    var _jourKey = _jMat(AppState.jourActif || 'Lundi');
+    var _horsCreneaux = [], _nbVerifies = 0;
+    blocs.forEach(function(b) {
+      if (b.type !== 'livraison' || !b.arret) return;
+      var mag = b.arret.magasin || b.arret.lieu || '';
+      var jourData = (_cartoPlag[mag] || {})[_jourKey] || null;
+      if (!jourData) return;
+      var parts = b.arret._mergedParts || [{ marchandise: b.arret.marchandise || '' }];
+      var hasSurgP  = parts.some(function(p) { return (p.marchandise||'').toUpperCase() === 'SURG'; });
+      var hasFraisP = parts.some(function(p) { var m = (p.marchandise||'').toUpperCase(); return m === 'FL' || m === 'PF'; });
+      var cat = hasSurgP ? 'surg' : hasFraisP ? 'frais' : 'sec';
+      var slots = (jourData[cat] || []).slice();
+      if (!slots.length) slots = (jourData.sec || []).concat(jourData.frais || [], jourData.surg || []);
+      if (!slots.length) return;
+      _nbVerifies++;
+      var sD = b.debut, sF = b.debut + b.duree;
+      var intersecte = false;
+      for (var _k = 0; _k < slots.length && !intersecte; _k++) {
+        var sl = slots[_k], slS, slE;
+        if (sl.fin >= sl.debut) {
+          slS = sl.debut; slE = sl.fin;
+          if (sD < slE && slS < sF) { intersecte = true; break; }
+          slS += 1440; slE += 1440;
+          if (sD < slE && slS < sF) { intersecte = true; break; }
+        } else {
+          slS = sl.debut; slE = sl.fin + 1440;
+          if (sD < slE && slS < sF) { intersecte = true; break; }
+        }
+      }
+      if (!intersecte) _horsCreneaux.push(mag);
+    });
+    if (_nbVerifies === 0) {
+      creneauxMsg = 'Créneaux non définis pour ces magasins';
+    } else {
+      creneauxOk = _horsCreneaux.length === 0;
+      creneauxMsg = creneauxOk
+        ? 'Toutes les livraisons dans les créneaux (' + _nbVerifies + ' vérifiée(s))'
+        : 'Hors créneaux : ' + _horsCreneaux.filter(function(v,i,a){return a.indexOf(v)===i;}).join(', ');
+    }
   }
 
   // ── R11 : Reprise emballages ──
