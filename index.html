@@ -438,6 +438,13 @@
       overflow-y: auto;
     }
     .ms-panel.ms-open { display: block; }
+    #ms-panel-magasin { min-width: 220px; max-height: 320px; }
+    .ms-search-input {
+      display: block; width: 100%; padding: 7px 10px; box-sizing: border-box;
+      border: none; border-bottom: 1px solid #ECEFF1; font-size: 11px; color: #37474F;
+      outline: none; background: #fff;
+    }
+    .ms-search-input:focus { border-bottom-color: #D6180B; }
     .ms-clear {
       padding: 6px 10px; font-size: 11px; color: #90A4AE; cursor: pointer;
       border-bottom: 1px solid #ECEFF1; display: flex; align-items: center; gap: 5px;
@@ -1247,7 +1254,7 @@
     </div>
     <div class="toolbar-group">
       <button class="btn btn-secondary" onclick="changerZoom(-1)" title="Dézoomer">−</button>
-      <span id="zoom-label" style="min-width:38px;text-align:center;font-size:11px;font-weight:700;color:#37474F;padding:0 2px">100%</span>
+      <span id="zoom-label" style="min-width:38px;text-align:center;font-size:11px;font-weight:700;color:#37474F;padding:0 2px">25%</span>
       <button class="btn btn-secondary" onclick="changerZoom(+1)" title="Zoomer">+</button>
     </div>
     <div class="toolbar-group">
@@ -2896,7 +2903,7 @@ var AppState = {
   _detailTourneeRow:   null,   // ligne Excel de la tournée ouverte
   _validationTimer:    null,
   _toastTimer:         null,
-  PPM:                 2,
+  PPM:                 0.5,
   kpiParams:           { coutFixe: 300, coutKmSec: 0.45, coutKmFrais: 0.55, coutHJour: 35, coutHNuit: 47, co2ParKm: 900, prixCarboneTonne: 50 },
   filtresFlux:         { marchandise: {}, magasin: {}, entrepot: {}, zoneLog: {}, zoneLiv: {} },
   moduleM0:            { id: 'M0', tours: [] },
@@ -3001,8 +3008,8 @@ function _jMat(j)    { return j === 'Dimanche' ? 'Samedi' : j; }
 function _isSamDim(j){ return j === 'Samedi' || j === 'Dimanche'; }
 
 // ── Niveaux de zoom — PPM=2 = 100%, palier 0.25–4 ──
-var ZOOM_LEVELS = [0.5, 1, 2, 3, 4];
-var _zoomIdx = 2; // défaut = 2 px/min = 100%
+var ZOOM_LEVELS = [0.5, 0.7, 1, 2, 3, 4];
+var _zoomIdx = 0; // défaut = 0.5 px/min = 25%
 function changerZoom(delta) {
   _zoomIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, _zoomIdx + delta));
   AppState.PPM = ZOOM_LEVELS[_zoomIdx];
@@ -3644,7 +3651,13 @@ function toggleMsPanel(key) {
   if (!panel) return;
   var wasOpen = panel.classList.contains('ms-open');
   document.querySelectorAll('.ms-panel.ms-open').forEach(function(p) { p.classList.remove('ms-open'); });
-  if (!wasOpen) panel.classList.add('ms-open');
+  if (!wasOpen) {
+    panel.classList.add('ms-open');
+    if (key === 'magasin') {
+      var srch = panel.querySelector('.ms-search-input');
+      if (srch) setTimeout(function() { srch.focus(); }, 0);
+    }
+  }
 }
 document.addEventListener('click', function(e) {
   if (!e.target.closest('.ms-wrapper')) {
@@ -3661,7 +3674,11 @@ function onMsChange(key, cb) {
 function clearMsFilter(key) {
   AppState.filtresFlux[key] = {};
   var panel = document.getElementById('ms-panel-' + key);
-  if (panel) panel.querySelectorAll('input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
+  if (panel) {
+    panel.querySelectorAll('input[type=checkbox]').forEach(function(cb) { cb.checked = false; });
+    var srch = panel.querySelector('.ms-search-input');
+    if (srch) { srch.value = ''; filtrerMsSearch(key, ''); }
+  }
   updateMsBtn(key);
   filtrerFlux();
 }
@@ -3685,14 +3702,36 @@ function populateMsPanel(key, vals, defautLabel) {
   var panel = document.getElementById('ms-panel-' + key);
   if (!panel) return;
   var sels = AppState.filtresFlux[key] || {};
-  var html = '<div class="ms-clear" onclick="clearMsFilter(\'' + key + '\')">✕ Tout effacer</div>';
+  var prevSearch = '';
+  if (key === 'magasin') {
+    var prevInput = panel.querySelector('.ms-search-input');
+    if (prevInput) prevSearch = prevInput.value || '';
+  }
+  var html = '';
+  if (key === 'magasin') {
+    html += '<input type="text" class="ms-search-input" placeholder="Rechercher un magasin…" oninput="filtrerMsSearch(\'magasin\',this.value)">';
+  }
+  html += '<div class="ms-clear" onclick="clearMsFilter(\'' + key + '\')">✕ Tout effacer</div>';
   vals.forEach(function(v) {
     var chk = sels[v] ? ' checked' : '';
     html += '<label class="ms-item"><input type="checkbox" value="' + v.replace(/"/g, '&quot;') +
             '" onchange="onMsChange(\'' + key + '\',this)"' + chk + '> ' + v + '</label>';
   });
   panel.innerHTML = html;
+  if (key === 'magasin' && prevSearch) {
+    var newInput = panel.querySelector('.ms-search-input');
+    if (newInput) { newInput.value = prevSearch; filtrerMsSearch('magasin', prevSearch); }
+  }
   updateMsBtn(key);
+}
+
+function filtrerMsSearch(key, query) {
+  var panel = document.getElementById('ms-panel-' + key);
+  if (!panel) return;
+  var q = (query || '').toLowerCase().trim();
+  panel.querySelectorAll('.ms-item').forEach(function(item) {
+    item.style.display = (!q || item.textContent.toLowerCase().indexOf(q) >= 0) ? '' : 'none';
+  });
 }
 
 function filtrerFlux() {
@@ -7842,11 +7881,11 @@ function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDu
       var tMin, tMax;
 
       tMin = c.debut - SETUP - dt.debutRel;
-      tMax = cFin   - SETUP - dt.debutRel - dt.svc;
+      tMax = cFin   - SETUP - dt.debutRel;
       if (tMax > tMin) crensSegments.push({ debut: tMin, fin: tMax });
 
       tMin = c.debut + 1440 - SETUP - dt.debutRel;
-      tMax = cFin   + 1440 - SETUP - dt.debutRel - dt.svc;
+      tMax = cFin   + 1440 - SETUP - dt.debutRel;
       if (tMax > tMin) crensSegments.push({ debut: tMin, fin: tMax });
     });
     if (!crensSegments.length) return [];
