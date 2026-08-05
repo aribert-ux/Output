@@ -3772,7 +3772,7 @@ function rendrePlanningFlux(data) {
     utTotal += f.ut || 0;
     Object.keys(AppState.planLocal).forEach(function(tid) {
       (AppState.planLocal[tid] || []).forEach(function(pf) {
-        if (pf.magasin === f.magasin && pf.marchandise === f.marchandise && pf.entrepot === f.entrepot) {
+        if (pf.magasin === f.magasin && pf.marchandise === f.marchandise && pf.entrepot === f.entrepot && !pf._isFluxNavettise) {
           utAffecteGlobal += parseFloat(pf.utAffecte !== undefined ? pf.utAffecte : pf.ut) || 0;
         }
       });
@@ -3830,7 +3830,7 @@ function rendrePlanningFlux(data) {
     var utAff = 0;
     Object.keys(AppState.planLocal).forEach(function(tid) {
       (AppState.planLocal[tid] || []).forEach(function(pf) {
-        if (pf.magasin === f.magasin && pf.marchandise === f.marchandise && pf.entrepot === f.entrepot) {
+        if (pf.magasin === f.magasin && pf.marchandise === f.marchandise && pf.entrepot === f.entrepot && !pf._isFluxNavettise) {
           utAff += parseFloat(pf.utAffecte !== undefined ? pf.utAffecte : pf.ut) || 0;
         }
       });
@@ -6222,7 +6222,6 @@ function rendreGantt(data) {
             var _navMark = document.createElement('span');
             _navMark.textContent = '⇄';
             _navMark.style.cssText = 'font-size:8px;font-weight:700;color:#00BCD4;position:absolute;top:1px;left:2px;line-height:1;pointer-events:none;z-index:10';
-            segEl.style.position = 'relative';
             segEl.appendChild(_navMark);
 
             // Tooltip enrichi : retrouver entrepôt d'origine via fluxNavettes
@@ -9213,7 +9212,8 @@ function validerToutesTournees() {
       } else {
         finMin = offset + 60;
       }
-      tourInfos.push({ tid: tid, offset: offset, finMin: finMin });
+      var entrepotDep = (flux[0] && flux[0].entrepot) || ov.zone || (t && t[6] ? t[6].toString() : '') || 'ENTREPOT';
+      tourInfos.push({ tid: tid, offset: offset, finMin: finMin, entrepotDep: entrepotDep, entrepotRet: retour });
     });
     tourInfos.sort(function(a, b) { return a.offset - b.offset; });
 
@@ -9258,7 +9258,19 @@ function validerToutesTournees() {
     var r12conflicts = Object.keys(_r12ov);
     var r12msg  = r12ok ? 'Aucun chevauchement' : r12conflicts.join(', ') + ' — chevauchement tracteur';
 
-    if (!r8ok || !r9ok || !r12ok) {
+    // R13 : entrepôt de début de chaque shift = entrepôt de fin du même shift
+    var r13ok = true, r13parts = [];
+    segments8.forEach(function(seg, si) {
+      var dep = (seg[0].entrepotDep || 'ENTREPOT').trim().toUpperCase();
+      var ret = (seg[seg.length - 1].entrepotRet || 'ENTREPOT').trim().toUpperCase();
+      var ok  = dep === ret;
+      if (!ok) r13ok = false;
+      var prefix = segments8.length > 1 ? 'Shift ' + (si + 1) + ' : ' : '';
+      r13parts.push({ ok: ok, msg: prefix + seg[0].entrepotDep + (ok ? ' ↔ ' + seg[seg.length - 1].entrepotRet : ' ≠ ' + seg[seg.length - 1].entrepotRet) });
+    });
+    var r13msg = r13parts.map(function(p) { return p.msg; }).join('  |  ');
+
+    if (!r8ok || !r9ok || !r12ok || !r13ok) {
       modFailCount++;
       var hdr = document.createElement('div');
       hdr.style.cssText = 'font-weight:700;font-size:12px;color:#C62828;padding:8px 12px 2px;margin-top:6px';
@@ -9266,9 +9278,10 @@ function validerToutesTournees() {
       checklistDiv.appendChild(hdr);
       var ul = document.createElement('ul');
       ul.className = 'val-checklist';
-      [{ id:'R8',  ok:r8ok,  titre:'Durée de shift',      detail:r8msg  },
-       { id:'R12', ok:r12ok, titre:'Pas de chevauchement', detail:r12msg },
-       { id:'R9',  ok:r9ok,  titre:'Nb min de tournées',   detail:r9msg  }
+      [{ id:'R8',  ok:r8ok,  titre:'Durée de shift',             detail:r8msg  },
+       { id:'R12', ok:r12ok, titre:'Pas de chevauchement',       detail:r12msg },
+       { id:'R13', ok:r13ok, titre:'Entrepôt départ = retour',   detail:r13msg },
+       { id:'R9',  ok:r9ok,  titre:'Nb min de tournées',         detail:r9msg  }
       ].forEach(function(r) {
         var li = document.createElement('li');
         li.className = 'val-rule ' + (r.ok ? 'ok' : 'err');
@@ -9288,8 +9301,8 @@ function validerToutesTournees() {
   var modSummary = document.createElement('div');
   modSummary.style.cssText = 'font-size:11px;padding:10px 12px;border-top:1px solid #E0E0E0;margin-top:8px;font-weight:700;color:' + (modFailCount ? '#C62828' : '#2E7D32');
   modSummary.textContent = modFailCount
-    ? modFailCount + ' module(s) non conforme(s) (R8/R9/R12)'
-    : '✅ Tous les modules conformes (R8/R9/R12)';
+    ? modFailCount + ' module(s) non conforme(s) (R8/R9/R12/R13)'
+    : '✅ Tous les modules conformes (R8/R9/R12/R13)';
   checklistDiv.appendChild(modSummary);
 }
 
