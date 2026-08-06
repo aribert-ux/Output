@@ -8155,8 +8155,8 @@ function _afOpt_findBestPermutation(groupe, dm, jour) {
   }
 
   // SETUP correct selon famille : FRAIS/SURG = chgt(60)+adm(15) = 75, SEC = adm seul = 15
-  var isFraisOuSurg = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG');
-  var chgtDurG      = isFraisOuSurg ? 60 : 0;
+  var isFraisOuSurgDetail = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG');
+  var chgtDurG      = isFraisOuSurgDetail ? 60 : 0;
 
   // Pour N > _PERM_EXACT_LIMIT : nearest-neighbour (évite l'explosion N!)
   var perms;
@@ -8355,7 +8355,7 @@ function _afOpt_appliquerReglesShift(modId, mod) {
 }
 
 function _afOpt_placerGroupe(groupe, best, dm, jour) {
-  var SETUP    = isFraisOuSurg ? 75 : 15;
+  var SETUP    = isFraisOuSurgDetail ? 75 : 15;
   var DECROCHE = 15;
 
   // Retour de la tournée candidate vers son entrepôt (best.duree inclut déjà ce retour)
@@ -8469,7 +8469,7 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
   var finMin    = actualFinMin;
   var tid       = _afOpt_genTid();
   var marc      = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
-  var chgtSaved = isFraisOuSurg ? 60 : 0;
+  var chgtSaved = isFraisOuSurgDetail ? 60 : 0;
 
   if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
   AppState.tourneesLocales.push([tid, 33, groupe.entrepot, 15, chgtSaved, 'Non', marc, jour]);
