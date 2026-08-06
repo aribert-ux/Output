@@ -1671,6 +1671,10 @@
           Accrochage (min)
           <input id="ajout-new-adm" type="number" class="form-control" value="15" min="0" max="120" style="margin-top:4px">
         </label>
+        <label style="font-size:12px;font-weight:600;color:#455A64">
+          Chargement (min)
+          <input id="ajout-new-chgt" type="number" class="form-control" value="60" min="0" max="240" style="margin-top:4px">
+        </label>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
         <button class="btn btn-secondary" onclick="fermerModal('modal-tournee')">Annuler</button>
@@ -2692,7 +2696,7 @@ function calculerKPITrinome() {
       var t  = getTourneeData(tid, AppState.donnees);
       var ov = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
       var offset  = AppState.modulesOffsets[mod.id + '_' + tid] || 360;
-      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || _chgtDurFallback(tid) : _chgtDurFallback(tid));
       var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
       var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
       var zone    = ov.zone    !== undefined ? ov.zone     : (t ? (t[6] ? t[6].toString() : '') : '');
@@ -3083,12 +3087,15 @@ function afficherPanelTournees(modId) {
     var t   = AppState.donnees ? getTourneeData(tid, AppState.donnees) : null;
     if (_jourPanel && t && t[7] && t[7].toString() !== _jourPanel) return;
     var ov  = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
+    var flux  = AppState.planLocal[tid] || [];
+    var isFOS = flux.some(function(f) {
+      var m = (f.marchandise || '').toUpperCase();
+      return m === 'FL' || m === 'PF' || m === 'SURG';
+    });
     var cap = ov.capacite !== undefined ? +ov.capacite : (t ? (parseFloat(t[1]) || 33) : 33);
-    var chg = ov.chgtDur  !== undefined ? +ov.chgtDur  : (t ? (parseFloat(t[4]) || 0)  : 0);
+    var chg = ov.chgtDur  !== undefined ? +ov.chgtDur  : (t ? (parseFloat(t[4]) || (isFOS ? 60 : 0)) : (isFOS ? 60 : 0));
     var adm = ov.admDur   !== undefined ? +ov.admDur   : (t ? (parseFloat(t[3]) || 15) : 15);
     var ret = ov.retour   !== undefined ? ov.retour    : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
-
-    var flux  = AppState.planLocal[tid] || [];
     var _fze  = flux.find(function(f) { return f.entrepot; });
     var panelZone = _fze ? getZoneEntrepot(_fze.entrepot) : getZoneEntrepot(ret);
     var utAff = Math.ceil(flux.reduce(function(s, f) { return s + (+(f.utAffecte !== undefined ? f.utAffecte : f.ut) || 0); }, 0) * 10) / 10;
@@ -3167,9 +3174,28 @@ function afficherPanelTournees(modId) {
     admRow.style.cssText = 'display:flex;align-items:center;margin-bottom:4px;font-size:10px;color:#546E7A';
     var admSpan = document.createElement('span');
     admSpan.textContent = '🔗 Accrochage ' + adm + 'min';
-
     admRow.appendChild(admSpan);
     card.appendChild(admRow);
+
+    // ── Chargement (PF/FL/SURG uniquement) ──────────────
+    if (isFOS) {
+      var chgRow = document.createElement('div');
+      chgRow.style.cssText = 'display:flex;align-items:center;gap:4px;margin-bottom:5px;font-size:10px;color:#546E7A';
+      var chgLbl = document.createElement('span');
+      chgLbl.textContent = '🚚 Chargement :';
+      chgRow.appendChild(chgLbl);
+      [0, 30, 45, 60, 90].forEach(function(v) {
+        var chip = document.createElement('button');
+        var active = v === chg;
+        chip.style.cssText = 'padding:0 4px;font-size:8px;font-weight:700;border-radius:3px;cursor:pointer;border:1px solid;height:15px;' +
+          (active ? 'background:#01579B;color:#fff;border-color:#01579B' : 'background:#F5F5F5;color:#90A4AE;border-color:#E0E0E0');
+        chip.textContent = v === 0 ? '0' : v + '′';
+        chip.title = v === 0 ? 'Pas de chargement' : v + ' min de chargement';
+        (function(tId, val) { chip.addEventListener('click', function() { majOverride(tId, 'chgtDur', val); }); })(tid, v);
+        chgRow.appendChild(chip);
+      });
+      card.appendChild(chgRow);
+    }
 
     // ── Barre de composition (même code couleur que le Gantt) ──────────
     var capOuter = document.createElement('div');
@@ -3307,6 +3333,16 @@ function setEmbDelai(tid, idx, delai) {
   arr[idx].repriseEmb = delai > 0 ? 'Oui' : 'Non';
   afficherPanelTournees(_moduleSelectionne);
   if (AppState.donnees) rendreGantt(AppState.donnees);
+}
+
+// Retourne le chgtDur par défaut selon la famille de la tournée (60 pour FRAIS/SURG, 0 pour SEC)
+function _chgtDurFallback(tid) {
+  var flux = AppState.planLocal[tid] || [];
+  var isFOS = flux.some(function(f) {
+    var m = (f.marchandise || '').toUpperCase();
+    return m === 'FL' || m === 'PF' || m === 'SURG';
+  });
+  return isFOS ? 60 : 0;
 }
 
 function majOverride(tid, key, val) {
@@ -4135,7 +4171,12 @@ function rendrePlanningFlux(data) {
   var navPairsEl = document.getElementById('pfp-navpairs');
   if (navPairsEl) {
     navPairsEl.innerHTML = '';
-    var allNavPairs = AppState.fluxNavettes || [];
+    var _jourMatch = function(j) { return !j || (Array.isArray(j) ? j.indexOf(AppState.jourActif) >= 0 : j === AppState.jourActif); };
+    var allNavPairs = (AppState.fluxNavettes || []).filter(function(fn) {
+      if (_jourMatch(fn.jour)) return true; // navette sur ce jour
+      var der = (AppState.fluxDerivesNavette || []).filter(function(d) { return d._navFluxId === fn._navFluxId; })[0];
+      return der && _jourMatch(der.jour); // flux dérivé sur ce jour
+    });
     if (allNavPairs.length > 0) {
       navPairsEl.style.display = 'flex';
       var pairTitle = document.createElement('div');
@@ -4146,6 +4187,8 @@ function rendrePlanningFlux(data) {
       allNavPairs.forEach(function(pair) {
         var navItem = (AppState.navettesLibres || []).filter(function(n) { return n._navetteId === pair._navetteId; })[0];
         var derItem = (AppState.fluxDerivesNavette || []).filter(function(d) { return d._navFluxId === pair._navFluxId; })[0];
+        var navMatchesDay = _jourMatch(pair.jour);
+        var derMatchesDay = _jourMatch(derItem ? derItem.jour : pair.jour);
 
         // Statut de placement
         var navPlacee = Object.keys(AppState.planLocal).some(function(tid) {
@@ -4158,8 +4201,8 @@ function rendrePlanningFlux(data) {
         var row = document.createElement('div');
         row.className = 'pfp-navpair-row';
 
-        // Bloc navette (entrepôtOrigine → entrepôtRelay) — masqué si paire orpheline (navette absorbée)
-        if (navItem) {
+        // Bloc navette (entrepôtOrigine → entrepôtRelay) — masqué si paire orpheline ou navette sur un autre jour
+        if (navItem && navMatchesDay) {
           (function(navPayload, placed) {
             var el = document.createElement('div');
             el.className = 'pfp-navpair-item' + (placed ? ' placed' : '');
@@ -4192,6 +4235,36 @@ function rendrePlanningFlux(data) {
                 _tentativeFusionNavettes(AppState._dragNavetteSrc._navetteId, navPayload._navetteId);
               });
             }
+            // Clic droit : envoyer la navette au jour precedent
+            el.addEventListener('contextmenu', function(e) {
+              e.preventDefault(); e.stopPropagation();
+              var _old = document.getElementById('_navCtxMenu');
+              if (_old) _old.remove();
+              var menu = document.createElement('div');
+              menu.id = '_navCtxMenu';
+              menu.style.cssText = 'position:fixed;z-index:9999;background:#fff;border:1px solid #B0BEC5;border-radius:6px;box-shadow:0 3px 12px rgba(0,0,0,.25);padding:4px 0;font-size:12px;min-width:200px';
+              menu.style.left = e.clientX + 'px';
+              menu.style.top  = e.clientY + 'px';
+              var jourPrec = _jourPrecedent(AppState.jourActif);
+              var jourPrecLabel = Array.isArray(jourPrec) ? jourPrec.join(' + ') : jourPrec;
+              var mi = document.createElement('div');
+              mi.style.cssText = 'padding:7px 14px;cursor:pointer;color:#006064;';
+              mi.textContent = '⇦ Envoyer au ' + jourPrecLabel;
+              mi.addEventListener('mouseenter', function() { mi.style.background = '#E0F7FA'; });
+              mi.addEventListener('mouseleave', function() { mi.style.background = ''; });
+              mi.addEventListener('click', function() {
+                menu.remove();
+                var tp = (AppState.fluxNavettes || []).filter(function(fn) { return fn._navFluxId === pair._navFluxId; })[0];
+                if (tp) { tp.jour = jourPrec; rendrePlanningFlux(AppState.donnees); }
+              });
+              menu.appendChild(mi);
+              document.body.appendChild(menu);
+              setTimeout(function() {
+                document.addEventListener('click', function _ncClose(ev) {
+                  if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('click', _ncClose); }
+                });
+              }, 0);
+            });
             row.appendChild(el);
           })({ magasin: pair.entrepotRelay, marchandise: pair.marchandise, ut: pair.utNavette,
                entrepot: pair.entrepotOrigine, zoneLivraison: '', centreComm: '',
@@ -5068,7 +5141,7 @@ function assignerTourneeModule(modId, tid, offsetMin) {
 function _computeTourneeInterval(modId, tid, offset, data, distMap) {
   var t   = getTourneeData(tid, data);
   var ov  = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
-  var chgt = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+  var chgt = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || _chgtDurFallback(tid) : _chgtDurFallback(tid));
   var adm  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
   var ret  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
   var flux = AppState.planLocal[tid] || [];
@@ -5185,7 +5258,7 @@ function detecterChevauchementTracteur(mod, data, distMapGantt, reglesDechGantt)
     var offset  = AppState.modulesOffsets[mod.id + '_' + tid] || 6 * 60;
     var t       = getTourneeData(tid, data);
     var ov      = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
-    var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || 30) : 30);
+    var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || _chgtDurFallback(tid)) : _chgtDurFallback(tid));
     var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? (parseFloat(t[3]) || 15) : 15);
     var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
     var zone    = ov.zone    !== undefined ? ov.zone     : (t ? (t[6] ? t[6].toString() : '') : '');
@@ -5234,8 +5307,10 @@ function confirmerAjoutTournee() {
   var offsetMin = heureVersMinutes(heure) || 360;
   // Convention 6h→6h : une heure avant 6h appartient à l'après-minuit du jour (ex. 2h = 26h)
   if (AppState.jourActif && offsetMin < 6 * 60) offsetMin += 24 * 60;
-  var cap       = parseFloat((document.getElementById('ajout-new-cap') || {}).value) || 33;
-  var adm       = parseFloat((document.getElementById('ajout-new-adm') || {}).value) || 15;
+  var cap       = parseFloat((document.getElementById('ajout-new-cap')  || {}).value) || 33;
+  var adm       = parseFloat((document.getElementById('ajout-new-adm')  || {}).value) || 15;
+  var chgtManuel = parseFloat((document.getElementById('ajout-new-chgt') || {}).value);
+  var chgtManuel = isNaN(chgtManuel) ? 60 : chgtManuel;
 
   if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
   var allTids = {};
@@ -5252,7 +5327,7 @@ function confirmerAjoutTournee() {
     if (String(lxDefaut[li][1] || '').trim() === 'Entrepôt') { retourDefaut = String(lxDefaut[li][0]).trim(); break; }
   }
   // Format : [id, capacite, retour, admDur, chgtDur, repriseEmb, zone, jour]
-  AppState.tourneesLocales.push([tid, cap, retourDefaut, adm, 30, 'Non', 'VIDE', AppState.jourActif || '']);
+  AppState.tourneesLocales.push([tid, cap, retourDefaut, adm, chgtManuel, 'Non', 'VIDE', AppState.jourActif || '']);
 
   fermerModal('modal-tournee');
   assignerTourneeModule(_moduleSelectionne, tid, offsetMin);
@@ -5368,7 +5443,7 @@ function calculerShifts(mod, toursOrdonnes, blocsMap, splits) {
       : 0;
     var covCur = (AppState.tourneeOverrides && AppState.tourneeOverrides[curTid]) || {};
     var tCur   = AppState.donnees && getTourneeData(curTid, AppState.donnees);
-    var chgtCur = covCur.chgtDur !== undefined ? +covCur.chgtDur : (tCur ? parseFloat(tCur[4]) || 30 : 30);
+    var chgtCur = covCur.chgtDur !== undefined ? +covCur.chgtDur : (tCur ? parseFloat(tCur[4]) || _chgtDurFallback(curTid) : _chgtDurFallback(curTid));
     var fluxCur = AppState.planLocal[curTid] || [];
     var hasFraisCur = fluxCur.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase()) >= 0; });
     // Pour PF/FL/SURG le shift démarre au chargement (offset), pas à l'accroche (offset+chgtDur)
@@ -5447,7 +5522,7 @@ function calculerShifts(mod, toursOrdonnes, blocsMap, splits) {
     segTids.forEach(function(tid, tidIdx) {
       var ov      = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
       var t       = AppState.donnees && getTourneeData(tid, AppState.donnees);
-      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || _chgtDurFallback(tid) : _chgtDurFallback(tid));
       var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
       var tidFlux = AppState.planLocal[tid] || [];
       // Shift commence toujours à l'offset : pour PF/FL/SURG c'est le début du chargement ;
@@ -5978,7 +6053,7 @@ function rendreGantt(data) {
       var capacite = ov.capacite !== undefined ? +ov.capacite : (parseFloat(t[1]) || 33);
       var retour   = ov.retour   !== undefined ? ov.retour    : (t[2] ? t[2].toString() : 'ENTREPOT');
       var zone     = ov.zone     !== undefined ? ov.zone      : (t[6] ? t[6].toString() : '');
-      var chgtDur  = ov.chgtDur  !== undefined ? +ov.chgtDur  : (parseFloat(t[4]) || 30);
+      var chgtDur  = ov.chgtDur  !== undefined ? +ov.chgtDur  : (parseFloat(t[4]) || _chgtDurFallback(tid));
       var admDur   = ov.admDur   !== undefined ? +ov.admDur   : (parseFloat(t[3]) || 15);
       var isOv     = !!overlapping[tid];
 
@@ -6648,7 +6723,7 @@ function rendreGantt(data) {
         var t=getTourneeData(tid,data); if(!t)return;
         var ov=(AppState.tourneeOverrides&&AppState.tourneeOverrides[tid])||{};
         var offset=AppState.modulesOffsets[mod.id+'_'+tid]||360;
-        var chgt=ov.chgtDur!==undefined?+ov.chgtDur:(parseFloat(t[4])||30);
+        var chgt=ov.chgtDur!==undefined?+ov.chgtDur:(parseFloat(t[4])||_chgtDurFallback(tid));
         var adm =ov.admDur!==undefined ?+ov.admDur :(parseFloat(t[3])||15);
         var ret =ov.retour!==undefined ?ov.retour  :(t[2]?t[2].toString():'ENTREPOT');
         var flux=AppState.planLocal[tid]||[];
@@ -6850,7 +6925,7 @@ function _getTourneeTractorInfo(tid, extraFlux) {
   if (offset === undefined) offset = 6 * 60;
   var t       = AppState.donnees ? getTourneeData(tid, AppState.donnees) : null;
   var ov      = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
-  var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+  var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || _chgtDurFallback(tid) : _chgtDurFallback(tid));
   var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
   var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] || 'ENTREPOT').toString() : 'ENTREPOT');
   var zone    = ov.zone    !== undefined ? ov.zone     : (t && t[6] ? t[6].toString() : '');
@@ -6883,7 +6958,7 @@ function _getNavetteFin(navetteId, navTid) {
     var offset  = AppState.modulesOffsets[modId + '_' + tid] || 6 * 60;
     var t       = AppState.donnees ? getTourneeData(tid, AppState.donnees) : null;
     var ov      = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
-    var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+    var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || _chgtDurFallback(tid) : _chgtDurFallback(tid));
     var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
     var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] || 'ENTREPOT').toString() : 'ENTREPOT');
     var zone    = ov.zone    !== undefined ? ov.zone     : (t && t[6] ? t[6].toString() : '');
@@ -6923,6 +6998,12 @@ function _validerContrainteNavettes() {
       if (plan.some(function(pf) { return pf._navFluxId === pair._navFluxId && pf._isFluxNavettise; })) deriveTid = tid;
     });
     if (!navTid || !deriveTid) return;
+    // Paire inter-jours : le timing n'a pas de sens à comparer
+    var _pNavJour = pair.jour;
+    var _pDerEntry = (AppState.fluxDerivesNavette || []).filter(function(d) { return d._navFluxId === pair._navFluxId; })[0];
+    var _pDerJour  = _pDerEntry ? _pDerEntry.jour : null;
+    var _pSameDay  = !_pNavJour || !_pDerJour || (Array.isArray(_pNavJour) ? _pNavJour.indexOf(_pDerJour) >= 0 : _pNavJour === _pDerJour);
+    if (!_pSameDay) return;
     var navetteFin  = _getNavetteFin(pair._navetteId, navTid);
     var deriveInfo  = _getTourneeTractorInfo(deriveTid);
     if (navetteFin === null || !deriveInfo) return;
@@ -6933,6 +7014,12 @@ function _validerContrainteNavettes() {
   return violations;
 }
 // ───────────────────────────────────────────────────────────────────────────
+
+function _jourPrecedent(jour) {
+  var jours = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
+  var idx = jours.indexOf(jour);
+  return idx <= 0 ? ['Samedi','Dimanche'] : jours[idx - 1];
+}
 
 function onFluxDepose(flux, tourneeId, capacite) {
   // Exclusivité navette : pas de mélange flux normaux / navettes
@@ -6960,21 +7047,32 @@ function onFluxDepose(flux, tourneeId, capacite) {
           _navTid = tid;
         }
       });
+      // Détecter si la navette est affectée à un autre jour que le flux dérivé
+      var _navJour    = _fnPair.jour;
+      var _fluxJour   = flux.jour || AppState.jourActif;
+      var _autrJour   = _navJour && (Array.isArray(_navJour) ? _navJour.indexOf(_fluxJour) < 0 : _navJour !== _fluxJour);
       if (!_navTid) {
-        afficherToast('🚫 Placez d\'abord la navette (' + _fnPair.entrepotOrigine + ' → ' + _fnPair.entrepotRelay + ') avant le flux dérivé', 'erreur');
-        return;
-      }
-      // 2. Vérifier que T2 part après l'arrivée réelle de la navette (calcul Gantt précis)
-      var _navetteFin  = _getNavetteFin(_navetteIdEffective, _navTid);
-      var _deriveInfo  = _getTourneeTractorInfo(tourneeId, [flux]);
-      var _deriveTractorStart = _deriveInfo ? _deriveInfo.tractorStart : (6 * 60);
-      if (_navetteFin !== null && _navetteFin > _deriveTractorStart + 1) {
+        var _navJourLbl = _navJour ? (Array.isArray(_navJour) ? _navJour.join('/') : _navJour) : '';
         afficherToast(
-          '🚫 Flux dérivé part à ' + minutesVersHeure(Math.round(_deriveTractorStart)) +
-          ' avant l\'arrivée de la navette (' + minutesVersHeure(Math.round(_navetteFin)) + ')',
+          '🚫 Placez d\'abord la navette (' + _fnPair.entrepotOrigine + ' → ' + _fnPair.entrepotRelay + ')' +
+          (_autrJour ? ' dans une tournée du ' + _navJourLbl : ' avant le flux dérivé'),
           'erreur'
         );
         return;
+      }
+      // 2. Vérifier le timing uniquement si navette et flux dérivé sont sur le même jour
+      if (!_autrJour) {
+        var _navetteFin  = _getNavetteFin(_navetteIdEffective, _navTid);
+        var _deriveInfo  = _getTourneeTractorInfo(tourneeId, [flux]);
+        var _deriveTractorStart = _deriveInfo ? _deriveInfo.tractorStart : (6 * 60);
+        if (_navetteFin !== null && _navetteFin > _deriveTractorStart + 1) {
+          afficherToast(
+            '🚫 Flux dérivé part à ' + minutesVersHeure(Math.round(_deriveTractorStart)) +
+            ' avant l\'arrivée de la navette (' + minutesVersHeure(Math.round(_navetteFin)) + ')',
+            'erreur'
+          );
+          return;
+        }
       }
     }
   }
@@ -7498,7 +7596,7 @@ function _afOpt_phase0_extractContextualTournees(jour, dm) {
           if (key.endsWith('_' + tid)) offset = AppState.modulesOffsets[key];
         });
       }
-      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (parseFloat(tData[4]) || 30);
+      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (parseFloat(tData[4]) || _chgtDurFallback(tid));
       var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (parseFloat(tData[3]) || 15);
       var dep     = (flux[0] && flux[0].entrepot) || 'ENTREPOT';
       var retour  = ov.retour  !== undefined ? ov.retour   : ((tData && tData[2]) ? tData[2].toString() : dep);
@@ -7845,7 +7943,7 @@ function _afOpt_simulerGroupe(entrepot, arrets, dm, jour) {
 }
 
 function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDur) {
-  chgtDur = (chgtDur !== undefined && chgtDur !== null) ? +chgtDur : 30;
+  chgtDur = (chgtDur !== undefined && chgtDur !== null) ? +chgtDur : 60;
   admDur  = (admDur  !== undefined && admDur  !== null) ? +admDur  : 15;
   var SETUP = chgtDur + admDur;
 
@@ -7947,7 +8045,7 @@ function _showValidIntervals(tid) {
   // Paramètres de la tournée
   var t   = AppState.donnees ? getTourneeData(tid, AppState.donnees) : null;
   var ov  = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
-  var chgtDur  = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+  var chgtDur  = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || _chgtDurFallback(tid) : _chgtDurFallback(tid));
   var admDur   = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
   var entrepot = (flux[0] && flux[0].entrepot) || (t && t[6] ? t[6].toString() : '') || 'ENTREPOT';
   var jour     = AppState.jourActif || 'Lundi';
@@ -8056,9 +8154,9 @@ function _afOpt_findBestPermutation(groupe, dm, jour) {
     });
   }
 
-  // SETUP correct selon famille : FRAIS/SURG = chgt(30)+adm(15) = 45, SEC = adm seul = 15
+  // SETUP correct selon famille : FRAIS/SURG = chgt(60)+adm(15) = 75, SEC = adm seul = 15
   var isFraisOuSurg = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG');
-  var chgtDurG      = isFraisOuSurg ? 30 : 0;
+  var chgtDurG      = isFraisOuSurg ? 60 : 0;
 
   // Pour N > _PERM_EXACT_LIMIT : nearest-neighbour (évite l'explosion N!)
   var perms;
@@ -8257,7 +8355,7 @@ function _afOpt_appliquerReglesShift(modId, mod) {
 }
 
 function _afOpt_placerGroupe(groupe, best, dm, jour) {
-  var SETUP    = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 45 : 15;
+  var SETUP    = isFraisOuSurg ? 75 : 15;
   var DECROCHE = 15;
 
   // Retour de la tournée candidate vers son entrepôt (best.duree inclut déjà ce retour)
@@ -8371,7 +8469,7 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
   var finMin    = actualFinMin;
   var tid       = _afOpt_genTid();
   var marc      = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
-  var chgtSaved = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG') ? 30 : 0;
+  var chgtSaved = isFraisOuSurg ? 60 : 0;
 
   if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
   AppState.tourneesLocales.push([tid, 33, groupe.entrepot, 15, chgtSaved, 'Non', marc, jour]);
@@ -8581,6 +8679,7 @@ function _afOpt_phase2LNS(tourStates, dm, jour, startCout, onProgress, onDone) {
         candidate[bestPos.ti].flux.splice(bestPos.pos, 0, f);
       } else {
         // Nouvelle tournée pour ce flux non réinsérable
+        var _fm = (f.marchandise || '').toUpperCase();
         var newTs = {
           tid:       _afOpt_genTid(),
           modId:     null,
@@ -8588,7 +8687,7 @@ function _afOpt_phase2LNS(tourStates, dm, jour, startCout, onProgress, onDone) {
           retour:    f.entrepot || 'ENTREPOT',
           flux:      [f],
           offsetMin: 6 * 60,
-          chgtDur:   30,
+          chgtDur:   (_fm === 'FL' || _fm === 'PF' || _fm === 'SURG') ? 60 : 0,
           admDur:    15
         };
         candidate.push(newTs);
@@ -9025,7 +9124,12 @@ function rendreDetailTournee() {
   var cap      = row ? (parseFloat(row[1]) || 33)  : 33;
   var retour   = row ? (row[2] || 'ENTREPOT')       : 'ENTREPOT';
   var zone     = row ? (row[6] || '')               : '';
-  var chgtDur  = row ? (parseFloat(row[4]) || 30)   : 30;
+  var _ovD     = (AppState.tourneeOverrides && AppState.tourneeOverrides[tId]) || {};
+  var chgtDur  = _ovD.chgtDur !== undefined ? +_ovD.chgtDur : (row ? (parseFloat(row[4]) || _chgtDurFallback(tId)) : _chgtDurFallback(tId));
+  var isFraisOuSurgDetail = flux.some(function(f) {
+    var m = (f.marchandise || '').toUpperCase();
+    return m === 'FL' || m === 'PF' || m === 'SURG';
+  });
 
   var distD = {};
   lireDistancierWb().forEach(function(d) { distD[d.f+'_'+d.t] = {km:d.km,m:d.m}; });
@@ -9041,12 +9145,20 @@ function rendreDetailTournee() {
   var pct = Math.round(utTotal / cap * 100);
 
   // Métadonnées
+  var _chgtBtns = isFraisOuSurgDetail ? [30, 45, 60, 90].map(function(v) {
+    var active = v === chgtDur;
+    return '<button onclick="setChgtDurDetail(' + v + ')" ' +
+      'style="padding:0 5px;font-size:10px;font-weight:700;border-radius:3px;cursor:pointer;border:1px solid;height:18px;margin:0 1px;' +
+      (active ? 'background:#01579B;color:#fff;border-color:#01579B' : 'background:#F5F5F5;color:#90A4AE;border-color:#E0E0E0') + '" ' +
+      'title="' + v + ' min de chargement">' + v + '′</button>';
+  }).join('') : '';
   var meta = document.getElementById('detail-meta-tournee');
   if (meta) meta.innerHTML =
     '<span>📦 Capacité : <strong>' + cap + ' UT</strong></span>' +
     '<span>✅ Chargées : <strong style="color:' + (pct > 100 ? '#C62828' : '#2E7D32') + '">' + utTotal.toFixed(1) + ' UT (' + pct + '%)</strong></span>' +
     '<span>🏭 Retour : <strong>' + retour + '</strong></span>' +
-    (zone ? '<span>🗺 Zone : <strong>' + zone + '</strong></span>' : '');
+    (zone ? '<span>🗺 Zone : <strong>' + zone + '</strong></span>' : '') +
+    (isFraisOuSurgDetail ? '<span style="display:flex;align-items:center;gap:3px">🚚 Chgt :' + _chgtBtns + '</span>' : '');
 
   // ── Section 1 : flux planifiés ──
   var fHtml = '<div style="font-size:11px;font-weight:700;color:#78909C;text-transform:uppercase;letter-spacing:.5px;margin-bottom:7px">Flux planifiés</div>';
@@ -9134,6 +9246,13 @@ function setEmbDelaiFlux(tourneeId, idx, delai) {
   f[idx].repriseEmb = delai > 0 ? 'Oui' : 'Non';
   rendreDetailTournee();
   if (AppState.donnees) rendreGantt(AppState.donnees);
+}
+
+function setChgtDurDetail(dur) {
+  var tId = AppState._detailTourneeId;
+  if (!tId) return;
+  majOverride(tId, 'chgtDur', +dur);
+  rendreDetailTournee();
 }
 
 function monterFlux(tourneeId, idx) {
@@ -9236,7 +9355,7 @@ function validerToutesTournees() {
     modTids.forEach(function(tid) {
       var t = AppState.donnees ? getTourneeData(tid, AppState.donnees) : null;
       var ov = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
-      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || 30 : 30);
+      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4]) || _chgtDurFallback(tid) : _chgtDurFallback(tid));
       var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3]) || 15 : 15);
       var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
       var offset  = AppState.modulesOffsets[mod.id + '_' + tid] || 6 * 60;
@@ -9365,7 +9484,7 @@ function afficherChecklistTournee(tid, container) {
   var ov = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
   var capacite = ov.capacite !== undefined ? +ov.capacite : (t ? (parseFloat(t[1]) || 33) : 33);
   var retour = ov.retour !== undefined ? ov.retour : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
-  var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || 30) : 30);
+  var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || _chgtDurFallback(tid)) : _chgtDurFallback(tid));
   var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? (parseFloat(t[3]) || 15) : 15);
   var offset  = 6 * 60;
   AppState.modules.forEach(function(m) {
@@ -9805,7 +9924,7 @@ function exporterCSV() {
       var t = data ? getTourneeData(tid, data) : null;
       var ov = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
       var offset = AppState.modulesOffsets[mod.id+'_'+tid] || 6*60;
-      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4])||30 : 30);
+      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4])||_chgtDurFallback(tid) : _chgtDurFallback(tid));
       var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3])||15 : 15);
       var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2]||'ENTREPOT').toString() : 'ENTREPOT');
       var rem = AppState.tourneeRemorque[tid] || '';
@@ -9955,7 +10074,7 @@ function getTimelineRemorque(remorqueId, data, distMap, reglesDech) {
       if (m.tours.indexOf(tid) >= 0) offset = AppState.modulesOffsets[m.id + '_' + tid] || offset;
     });
     var t = getTourneeData(tid, data);
-    var chgtDur  = t ? (parseFloat(t[4]) || (rem ? rem.chargement : 30) || 30) : 30;
+    var chgtDur  = t ? (parseFloat(t[4]) || (rem ? rem.chargement : _chgtDurFallback(tid)) || _chgtDurFallback(tid)) : _chgtDurFallback(tid);
     var admDur   = t ? (parseFloat(t[3]) || (rem ? rem.admin : 15) || 15) : 15;
     var retourPt = t ? (t[2] ? t[2].toString() : 'ENTREPOT') : (rem ? rem.retour : 'ENTREPOT');
     var hookStart         = offset + chgtDur;
@@ -10022,7 +10141,7 @@ function _computeChargementDebut(tid) {
   var offset = modId ? (AppState.modulesOffsets[modId + '_' + tid] || 6 * 60) : 6 * 60;
   var ov = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
   var t = AppState.donnees ? getTourneeData(tid, AppState.donnees) : null;
-  var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || 30) : 30);
+  var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || _chgtDurFallback(tid)) : _chgtDurFallback(tid));
   var flux = AppState.planLocal[tid] || [];
   var hasFrais = flux.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase()) >= 0; });
   if (ov.chgtOffset != null) return ov.chgtOffset;
@@ -10035,7 +10154,7 @@ function _buildPlanningChargementModule(modId, toursOrdonnes, data) {
     var flux = AppState.planLocal[tid] || [];
     var ov = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
     var t = data ? getTourneeData(tid, data) : null;
-    var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || 30) : 30);
+    var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || _chgtDurFallback(tid)) : _chgtDurFallback(tid));
     if (chgtDur <= 0) return;
     var hasFrais = flux.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase()) >= 0; });
     var entrepot = (flux[0] && flux[0].entrepot) || (t && t[6] ? t[6].toString() : '') || 'ENTREPOT';
@@ -10163,7 +10282,7 @@ function rendreGanttRemorques(data) {
             if (e.button !== 0) return;
             e.stopPropagation(); e.preventDefault();
             var ov2 = (AppState.tourneeOverrides && AppState.tourneeOverrides[t_id]) || {};
-            var chgtD = ov2.chgtDur !== undefined ? +ov2.chgtDur : (t_data ? (parseFloat(t_data[4]) || 30) : 30);
+            var chgtD = ov2.chgtDur !== undefined ? +ov2.chgtDur : (t_data ? (parseFloat(t_data[4]) || _chgtDurFallback(t_id)) : _chgtDurFallback(t_id));
             var modId2 = null;
             AppState.modules.forEach(function(m) { if (m.tours.indexOf(t_id) >= 0) modId2 = m.id; });
             var off2 = modId2 ? (AppState.modulesOffsets[modId2 + '_' + t_id] || 6 * 60) : 6 * 60;
@@ -10259,7 +10378,7 @@ function rendreGanttRemorques(data) {
     AppState.modules.forEach(function(m) {
       if (m.tours.indexOf(tid) >= 0) offset = AppState.modulesOffsets[m.id + '_' + tid] || offset;
     });
-    var chgtDur  = ov.chgtDur !== undefined ? +ov.chgtDur  : (t ? (parseFloat(t[4]) || 30) : 30);
+    var chgtDur  = ov.chgtDur !== undefined ? +ov.chgtDur  : (t ? (parseFloat(t[4]) || _chgtDurFallback(tid)) : _chgtDurFallback(tid));
     var admDur   = ov.admDur  !== undefined ? +ov.admDur   : (t ? (parseFloat(t[3]) || 15) : 15);
     var retourPt = ov.retour  !== undefined ? ov.retour    : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
     var flux     = AppState.planLocal[tid] || [];
@@ -10275,6 +10394,7 @@ function rendreGanttRemorques(data) {
   }
 
   var bilanModules = [];
+  var tdMap = {}; // cache td pour réutilisation bilan + nav décharges
 
   // ── Rendu par module ──
   AppState.modules.forEach(function(mod) {
@@ -10303,6 +10423,7 @@ function rendreGanttRemorques(data) {
 
     toursActives.forEach(function(tid) {
       var td = buildTd(tid);
+      tdMap[tid] = td;
       modInfo.debutMod = Math.min(modInfo.debutMod, td.barLeft);
       modInfo.finMod   = Math.max(modInfo.finMod,   td.barEnd);
 
@@ -10328,13 +10449,48 @@ function rendreGanttRemorques(data) {
       conteneur.appendChild(ligne);
     });
 
-    // Ligne planning chargement
+    // Ligne planning chargement (+ déchargements navettes avec marchandises)
     var planChgt = _buildPlanningChargementModule(mod.id, toursActives, data);
-    modInfo.simultanes = planChgt.nbLanes;
+
+    // Extraire les blocs de déchargement navette (navettes avec UT > 0 seulement)
+    var navDechargeBlocs = [];
+    toursActives.forEach(function(tid) {
+      var td = tdMap[tid];
+      if (!td) return;
+      var hasNavAvecUT = td.flux.some(function(f) {
+        return f.isNavette && parseFloat(f.utAffecte !== undefined ? f.utAffecte : (f.ut || 0)) > 0;
+      });
+      if (!hasNavAvecUT) return;
+      var decrochBloc = null;
+      for (var i = td.blocs.length - 1; i >= 0; i--) {
+        if (td.blocs[i].type === 'deccrochage') { decrochBloc = td.blocs[i]; break; }
+      }
+      if (!decrochBloc) return;
+      var entrepotDest = td.blocs._effectiveRetour || decrochBloc.destination || 'ENTREPOT';
+      navDechargeBlocs.push({ tid: tid, debutChgt: decrochBloc.debut,
+        finChgt: decrochBloc.debut + decrochBloc.duree, chgtDur: decrochBloc.duree,
+        entrepot: entrepotDest, hasFrais: false, isDechargeNavette: true, lane: 0 });
+    });
+
+    // Fusionner chargements + déchargements navettes et réaffecter les lanes
+    var allChgtBlocs = planChgt.blocs.concat(navDechargeBlocs);
+    allChgtBlocs.sort(function(a, b) { return a.debutChgt - b.debutChgt; });
+    var allLaneEnds = [];
+    allChgtBlocs.forEach(function(b) {
+      var li = -1;
+      for (var i = 0; i < allLaneEnds.length; i++) {
+        if (b.debutChgt >= allLaneEnds[i]) { li = i; break; }
+      }
+      if (li < 0) { li = allLaneEnds.length; allLaneEnds.push(0); }
+      b.lane = li;
+      allLaneEnds[li] = b.finChgt;
+    });
+    var nbLanesTotal = Math.max(1, allLaneEnds.length);
+    modInfo.simultanes = nbLanesTotal;
     bilanModules.push(modInfo);
 
-    if (planChgt.blocs.length > 0) {
-      var rowHeight = planChgt.nbLanes * ROW_H_CHGT;
+    if (allChgtBlocs.length > 0) {
+      var rowHeight = nbLanesTotal * ROW_H_CHGT;
       var ligneChgt = document.createElement('div');
       ligneChgt.className = 'gantt-ligne-module gantt-ligne-chgt-planning';
       ligneChgt.style.minWidth = (LABEL_W + largeur) + 'px';
@@ -10344,22 +10500,29 @@ function rendreGanttRemorques(data) {
       lblChgt.className = 'mod-label';
       lblChgt.innerHTML = '<span style="font-size:10px;color:#F57F17;font-weight:700">⚡ Chargements</span>' +
         '<span style="font-size:9px;color:#78909C">' + mod.id + '</span>' +
-        (planChgt.nbLanes > 1 ? '<span style="font-size:9px;color:#E65100;font-weight:700">⚠ ' + planChgt.nbLanes + ' simult.</span>' : '');
+        (nbLanesTotal > 1 ? '<span style="font-size:9px;color:#E65100;font-weight:700">⚠ ' + nbLanesTotal + ' simult.</span>' : '') +
+        (navDechargeBlocs.length > 0 ? '<span style="font-size:9px;color:#00695C;font-weight:700">+ Nav.</span>' : '');
       ligneChgt.appendChild(lblChgt);
 
       var trackChgt = buildTrack();
       trackChgt.style.minHeight = rowHeight + 'px';
 
-      planChgt.blocs.forEach(function(b) {
+      allChgtBlocs.forEach(function(b) {
         var xLeft  = (b.debutChgt - debutH * 60) * PPM;
         var bWidth = Math.max(b.chgtDur * PPM, 20);
         var yTop   = b.lane * ROW_H_CHGT + 3;
         var bH     = ROW_H_CHGT - 6;
         var bEl = document.createElement('div');
-        bEl.className = 'tour-seg ' + (b.hasFrais ? 'tour-seg-chgt' : 'tour-seg-chgt-ent');
-        bEl.style.cssText = 'position:absolute;left:' + xLeft + 'px;width:' + bWidth + 'px;top:' + yTop + 'px;height:' + bH + 'px;line-height:' + bH + 'px;box-sizing:border-box;overflow:hidden;white-space:nowrap;font-size:9px';
-        bEl.title = b.tid + ' · ' + b.entrepot + ' · ' + b.chgtDur + ' min · ' + minutesVersHeure(b.debutChgt) + '→' + minutesVersHeure(b.finChgt);
-        bEl.textContent = b.tid + ' ' + b.entrepot;
+        if (b.isDechargeNavette) {
+          bEl.className = 'tour-seg';
+          bEl.style.cssText = 'position:absolute;left:' + xLeft + 'px;width:' + bWidth + 'px;top:' + yTop + 'px;height:' + bH + 'px;line-height:' + bH + 'px;box-sizing:border-box;overflow:hidden;white-space:nowrap;font-size:9px;background:#00897B;color:#fff;border:1px solid #00695C;border-radius:3px;padding:0 2px';
+          bEl.title = 'Dechargement navette ' + b.tid + ' ' + b.entrepot + ' ' + b.chgtDur + ' min';
+          bEl.textContent = 'Nav. ' + b.entrepot;
+        } else {
+          bEl.className = 'tour-seg ' + (b.hasFrais ? 'tour-seg-chgt' : 'tour-seg-chgt-ent');
+          bEl.style.cssText = 'position:absolute;left:' + xLeft + 'px;width:' + bWidth + 'px;top:' + yTop + 'px;height:' + bH + 'px;line-height:' + bH + 'px;box-sizing:border-box;overflow:hidden;white-space:nowrap;font-size:9px';
+          bEl.textContent = b.tid + ' ' + b.entrepot;
+        }
         trackChgt.appendChild(bEl);
       });
 
@@ -10387,6 +10550,7 @@ function rendreGanttRemorques(data) {
       conteneur.appendChild(sepU);
       unassigned.forEach(function(tid) {
         var td = buildTd(tid);
+        tdMap[tid] = td;
         var type = getTypeTourneeRem(tid);
         var couleurBord = type === 'surg' ? '#283593' : (type === 'frais' ? '#1E88E5' : '#43A047');
         var typeLabel   = type === 'surg' ? '🧊 Surg' : (type === 'frais' ? '❄ Frais' : '📦 Sec');
@@ -10411,36 +10575,118 @@ function rendreGanttRemorques(data) {
     conteneur.innerHTML += '<div style="text-align:center;padding:40px;color:#90A4AE;font-size:13px">Aucune tournée planifiée dans les modules.</div>';
   }
 
-  // ── Bilan par module → panel latéral ──
+  // ── Bilan par entrepôt → panel latéral ──
   var panelBilan = document.getElementById('panel-remorques-bilan-contenu');
   if (panelBilan) {
     panelBilan.innerHTML = '';
-    if (bilanModules.length === 0) {
+
+    // Collecter événements et variation par entrepôt depuis tous les td
+    var bilanEntrepots = {};
+    function _bepGet(ep) {
+      if (!bilanEntrepots[ep]) bilanEntrepots[ep] = { events: [], variation: 0 };
+      return bilanEntrepots[ep];
+    }
+
+    Object.keys(tdMap).forEach(function(tid) {
+      var td = tdMap[tid];
+      if (!td || (td.blocs.length === 0 && td.chgtDur <= 0)) return;
+      var ep = td.entrepotDep || 'ENTREPOT';
+      var effectiveRet = (td.blocs._effectiveRetour) || td.retourPt || ep;
+
+      // Variation : départ depuis ep, arrivée à effectiveRet
+      _bepGet(ep).variation -= 1;
+      _bepGet(effectiveRet).variation += 1;
+
+      // Événement chargement
+      if (td.chgtDur > 0) {
+        var _firstMag = '';
+        for (var _fi = 0; _fi < td.flux.length; _fi++) {
+          if (!td.flux[_fi].isNavette && td.flux[_fi].magasin) { _firstMag = td.flux[_fi].magasin; break; }
+        }
+        _bepGet(ep).events.push({ type: 'chgt', tid: tid, debut: td.barLeft, fin: td.barLeft + td.chgtDur, duree: td.chgtDur, premierMagasin: _firstMag });
+      }
+
+      // Événement déchargement navette (marchandise seulement, ut > 0)
+      var hasNavAvecUT = td.flux.some(function(f) {
+        return f.isNavette && parseFloat(f.utAffecte !== undefined ? f.utAffecte : (f.ut || 0)) > 0;
+      });
+      if (hasNavAvecUT) {
+        var dBloc = null;
+        for (var i = td.blocs.length - 1; i >= 0; i--) {
+          if (td.blocs[i].type === 'deccrochage') { dBloc = td.blocs[i]; break; }
+        }
+        if (dBloc) {
+          _bepGet(effectiveRet).events.push({ type: 'nav_dech', tid: tid, debut: dBloc.debut, fin: dBloc.debut + dBloc.duree, duree: dBloc.duree });
+        }
+      }
+    });
+
+    var epList = Object.keys(bilanEntrepots).sort();
+    if (epList.length === 0) {
       panelBilan.innerHTML = '<div style="color:#90A4AE;font-size:12px;padding:16px;text-align:center">Aucun module planifié.</div>';
     } else {
-      bilanModules.forEach(function(m) {
-        if (m.debutMod === Infinity) return;
+      epList.forEach(function(ep) {
+        var epData = bilanEntrepots[ep];
         var section = document.createElement('div');
-        section.style.cssText = 'padding:8px 12px;border-bottom:1px solid #ECEFF1';
-        var modTitle = document.createElement('div');
-        modTitle.style.cssText = 'font-size:11px;font-weight:700;color:#7F0000;margin-bottom:4px';
-        modTitle.textContent = 'Module ' + m.modId;
-        section.appendChild(modTitle);
+        section.style.cssText = 'border-bottom:2px solid #ECEFF1';
 
-        [['Remorques', m.nbRemorques, 'zero'], ['Début', minutesVersHeure(m.debutMod), 'zero'], ['Fin', minutesVersHeure(m.finMod), 'zero']].forEach(function(d) {
-          var row = document.createElement('div'); row.className = 'rb-row';
-          var l = document.createElement('div'); l.className = 'rb-lieu'; l.textContent = d[0];
-          var v = document.createElement('div'); v.className = 'rb-delta ' + d[2]; v.textContent = d[1];
-          row.appendChild(l); row.appendChild(v); section.appendChild(row);
-        });
-        if (m.simultanes > 1) {
-          var rowW = document.createElement('div'); rowW.className = 'rb-row';
-          var lW = document.createElement('div'); lW.className = 'rb-lieu'; lW.textContent = 'Chgts simult.';
-          var dW = document.createElement('div'); dW.className = 'rb-delta neg';
-          dW.textContent = '⚠ ' + m.simultanes;
-          dW.title = m.simultanes + ' chargements simultanés';
-          rowW.appendChild(lW); rowW.appendChild(dW); section.appendChild(rowW);
+        var epTitle = document.createElement('div');
+        epTitle.style.cssText = 'font-size:11px;font-weight:700;color:#37474F;background:#ECEFF1;padding:5px 12px;letter-spacing:0.3px';
+        epTitle.textContent = ep;
+        section.appendChild(epTitle);
+
+        // Trier événements chronologiquement
+        var evts = epData.events.slice().sort(function(a, b) { return a.debut - b.debut; });
+
+        if (evts.length === 0) {
+          var emptyDiv = document.createElement('div');
+          emptyDiv.style.cssText = 'font-size:10px;color:#B0BEC5;padding:3px 12px';
+          emptyDiv.textContent = 'Pas de chargement';
+          section.appendChild(emptyDiv);
+        } else {
+          // Regrouper les événements qui se chevauchent (côte à côte)
+          var groups = [], curGrp = null, curEnd = -Infinity;
+          evts.forEach(function(ev) {
+            if (!curGrp || ev.debut >= curEnd) {
+              curGrp = [ev]; groups.push(curGrp); curEnd = ev.fin;
+            } else {
+              curGrp.push(ev); curEnd = Math.max(curEnd, ev.fin);
+            }
+          });
+          groups.forEach(function(grp) {
+            var grpRow = document.createElement('div');
+            grpRow.style.cssText = 'display:flex;gap:4px;padding:4px 8px';
+            grp.forEach(function(ev) {
+              var isNav = ev.type === 'nav_dech';
+              var card = document.createElement('div');
+              card.style.cssText = 'flex:1;min-width:0;border-radius:4px;padding:3px 5px;border:1px solid ' +
+                (isNav ? '#80CBC4;background:#E0F2F1' : '#90CAF9;background:#E3F2FD');
+              var hdr = document.createElement('div');
+              hdr.style.cssText = 'font-size:10px;font-weight:700;color:' + (isNav ? '#00695C' : '#1565C0') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+              hdr.textContent = (isNav ? 'Nav. ' : 'Chgt ') + ev.tid + (ev.premierMagasin ? ' · ' + ev.premierMagasin : '');
+              var sub = document.createElement('div');
+              sub.style.cssText = 'font-size:9px;color:#546E7A';
+              sub.textContent = minutesVersHeure(ev.debut) + ' - ' + minutesVersHeure(ev.fin) + ' (' + ev.duree + 'min)';
+              card.appendChild(hdr); card.appendChild(sub);
+              grpRow.appendChild(card);
+            });
+            section.appendChild(grpRow);
+          });
         }
+
+        // Variation de remorques
+        var v = epData.variation;
+        var varRow = document.createElement('div');
+        varRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:4px 12px 7px 12px';
+        var varLbl = document.createElement('span');
+        varLbl.style.cssText = 'font-size:11px;color:#546E7A';
+        varLbl.textContent = 'Variation remorques';
+        var varVal = document.createElement('span');
+        varVal.className = 'rb-delta ' + (v > 0 ? 'pos' : (v < 0 ? 'neg' : 'zero'));
+        varVal.textContent = (v > 0 ? '+' : '') + v;
+        varRow.appendChild(varLbl); varRow.appendChild(varVal);
+        section.appendChild(varRow);
+
         panelBilan.appendChild(section);
       });
     }
@@ -10657,7 +10903,7 @@ function rendreGanttMagasins(data) {
       var t       = getTourneeData(tid, data);
       var ov      = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
       var offset  = AppState.modulesOffsets[mod.id + '_' + tid] || 6 * 60;
-      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || 30) : 30);
+      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || _chgtDurFallback(tid)) : _chgtDurFallback(tid));
       var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? (parseFloat(t[3]) || 15) : 15);
       var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
       var zone    = ov.zone    !== undefined ? ov.zone     : (t ? (t[6] ? t[6].toString() : '') : '');
@@ -10709,7 +10955,7 @@ function rendreGanttMagasins(data) {
     if (!flux || flux.length === 0) return;
     var t       = getTourneeData(tid, data);
     var ov      = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
-    var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || 30) : 30);
+    var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || _chgtDurFallback(tid)) : _chgtDurFallback(tid));
     var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? (parseFloat(t[3]) || 15) : 15);
     var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
     var zone    = ov.zone    !== undefined ? ov.zone     : (t ? (t[6] ? t[6].toString() : '') : '');
