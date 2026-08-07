@@ -169,6 +169,21 @@
     }
     .flux-block-unplaced:hover { opacity: .82; }
     .flux-block-unplaced.dragging { opacity: .45; cursor: grabbing; }
+    /* Flux vide / Flux manuel — styles distinctifs */
+    .flux-block-manuel {
+      border: 2px dashed #F9A825 !important;
+      opacity: 0.92;
+    }
+    .flux-block-unplaced-manuel {
+      border: 2px dashed #F9A825 !important;
+      position: relative;
+    }
+    .pfp-badge-manuel {
+      position: absolute; top: 1px; left: 2px;
+      font-size: 7px; font-weight: 800; letter-spacing: 0.3px;
+      background: rgba(0,0,0,0.28); color: #fff;
+      padding: 0 3px; border-radius: 2px; pointer-events: none; line-height: 1.4;
+    }
 
     /* MODALE liste flux */
     #modal-liste-flux {
@@ -321,9 +336,9 @@
     .bloc-chargement { background: #B71C1C; }
     .bloc-trajet     { background: #78909C; }
     .bloc-livraison  { background: #2E7D32; }
-    .bloc-pause      { background: #E65100; }
+    .bloc-pause      { background: #FDD835; }
     .bloc-retour     { background: #455A64; }
-    .bloc-pause      { background: #E65100; }
+    .bloc-pause      { background: #FDD835; }
 
     .bloc-delete-btn {
       position: absolute; top: 2px; right: 2px;
@@ -674,6 +689,18 @@
     }
     .tour-seg-livr { pointer-events: auto; cursor: pointer; position: absolute; }
     .tour-seg-livr:hover { filter: brightness(1.12); }
+    /* Barre fine flux vide (passage emballages — 0 min déchargement) */
+    .tour-seg-flux-vide {
+      width: 3px !important; pointer-events: auto; cursor: default;
+      border-radius: 1px; z-index: 8;
+    }
+    .tour-seg-flux-vide:hover { filter: brightness(1.3); }
+    .tour-seg-vide-label {
+      position: absolute; font-size: 7px; font-weight: 700;
+      color: #4A148C; white-space: nowrap; pointer-events: none; z-index: 6;
+      transform: translateX(-50%);
+      background: rgba(255,255,255,0.88); border-radius: 2px; padding: 0 2px; line-height: 1.5;
+    }
     /* Livraison en conflit (chevauchement temporel avec une autre livraison dans le même magasin) */
     .tour-seg-livr--conflit {
       box-shadow: inset 0 0 0 3px rgba(198,40,40,0.9), 0 0 7px rgba(198,40,40,0.45) !important;
@@ -837,7 +864,7 @@
       pointer-events: all; cursor: help; z-index: 9;
     }
     .shift-break-mk.cond { background: rgba(38,50,56,0.55); }
-    .shift-break-mk.serv { background: rgba(230,81,0,0.50); }
+    .shift-break-mk.serv { background: rgba(253,216,53,0.75); }
     .shift-break-mk.para {
       width: 0; border-left: 2px dashed rgba(245,124,0,0.55);
       background: transparent;
@@ -1239,6 +1266,7 @@
     </div>
     <div class="toolbar-group">
       <button class="btn btn-secondary" onclick="ouvrirModalNavette()" title="Créer une navette à vide (déplacement tracteur sans marchandises)">↔ Navette à vide</button>
+      <button class="btn btn-secondary" onclick="ouvrirModalFluxManuel()" title="Créer un flux de récupération d'emballages (0 UT) ou un flux manuel vers un magasin">🔄 Flux manuel</button>
       <a class="btn btn-secondary" href="https://distancierinteractif-aakqowxsbgejq5w22rkvcz.streamlit.app/" target="_blank" rel="noopener">🗺 Distancier interactif</a>
       <a class="btn btn-secondary" href="https://aribert-ux.github.io/Aide_outil_planification/" target="_blank" rel="noopener">Aide</a>
     </div>
@@ -1305,7 +1333,7 @@
     <div class="legende">
       <div class="legende-item"><div class="legende-couleur" style="background:#9E9E9E"></div> Trajet</div>
       <div class="legende-item"><div class="legende-couleur" style="background:#455A64"></div> Retour</div>
-      <div class="legende-item"><div class="legende-couleur" style="background:#E65100"></div> Pause</div>
+      <div class="legende-item"><div class="legende-couleur" style="background:#FDD835"></div> Pause service</div>
       <div class="legende-item" style="color:#546E7A;font-style:italic;font-size:11px">⬛ Couleurs par lieu</div>
       <span class="legende-nuit"><span class="legende-nuit-rect"></span> Plage nuit (22h–06h)</span>
     </div>
@@ -1613,6 +1641,61 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="fermerModal('modal-navette')">Annuler</button>
       <button class="btn btn-primary" onclick="confirmerNavetteVide()">↔ Créer la navette à vide</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL FLUX VIDE / FLUX MANUEL ══ -->
+<div class="modal-overlay" id="modal-flux-manuel" onclick="if(event.target===this)fermerModal('modal-flux-manuel')">
+  <div class="modal" style="width:420px">
+    <div class="modal-header">
+      🔄 Créer un flux
+      <span class="vp-close" onclick="fermerModal('modal-flux-manuel')">✕</span>
+    </div>
+    <div class="modal-body" style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+      <div style="font-size:11px;color:#4A148C;background:#F3E5F5;border-radius:6px;padding:8px 12px;border-left:3px solid #9C27B0">
+        Créez un passage dans un magasin pour récupérer des emballages (0 UT),
+        ou ajoutez manuellement un flux avec une quantité et un type de marchandises.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <label style="font-size:12px;font-weight:600;color:#455A64">
+          Entrepôt départ
+          <select id="fm-dep" style="margin-top:4px;width:100%;padding:5px 8px;border:1px solid #CFD8DC;border-radius:6px;font-size:13px"></select>
+        </label>
+        <label style="font-size:12px;font-weight:600;color:#455A64">
+          Magasin destination
+          <select id="fm-mag" style="margin-top:4px;width:100%;padding:5px 8px;border:1px solid #CFD8DC;border-radius:6px;font-size:13px"></select>
+        </label>
+      </div>
+      <div style="display:flex;gap:16px;align-items:center">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;color:#455A64;cursor:pointer">
+          <input type="radio" name="fm-mode" value="vide" checked onchange="_majModeFluxManuel()"> Flux vide (0 UT — emballages)
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;color:#455A64;cursor:pointer">
+          <input type="radio" name="fm-mode" value="manuel" onchange="_majModeFluxManuel()"> Flux manuel
+        </label>
+      </div>
+      <div id="fm-manuel-fields" style="display:none;grid-template-columns:1fr 1fr;gap:8px">
+        <label style="font-size:12px;font-weight:600;color:#455A64">
+          Quantité (UT)
+          <input type="number" id="fm-ut" min="0" step="0.5" value="0" style="margin-top:4px;width:100%;padding:5px 8px;border:1px solid #CFD8DC;border-radius:6px;font-size:13px">
+        </label>
+        <label style="font-size:12px;font-weight:600;color:#455A64">
+          Marchandise
+          <select id="fm-marc" style="margin-top:4px;width:100%;padding:5px 8px;border:1px solid #CFD8DC;border-radius:6px;font-size:13px">
+            <option value="PGC">PGC</option>
+            <option value="PF">PF</option>
+            <option value="FL">FL</option>
+            <option value="SURG">SURG</option>
+            <option value="NAL">NAL</option>
+            <option value="BSA">BSA</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="fermerModal('modal-flux-manuel')">Annuler</button>
+      <button class="btn btn-primary" onclick="confirmerFluxManuel()">🔄 Créer le flux</button>
     </div>
   </div>
 </div>
@@ -2224,7 +2307,7 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
     blocs.push({
       type: 'pause_chauffeur', debut: curseur, duree: actualDur,
       label: _hbLbl,
-      color: type === 'conduite' ? '#C62828' : '#E65100', _pauseType: type,
+      color: type === 'conduite' ? '#C62828' : '#FDD835', _pauseType: type,
       _splitId: mbMeta ? mbMeta.splitId : undefined,
       _splitPart: mbMeta ? mbMeta.splitPart : undefined,
       _isParallelConvert: mbMeta ? !!mbMeta.isParallelConvert : false,
@@ -3026,6 +3109,16 @@ function changerZoom(delta) {
     if (AppState.vueActive === 'modules' || AppState.vueActive === 'flux') rendreGantt(AppState.donnees);
     if (AppState.vueActive === 'remorques') rendreGanttRemorques(AppState.donnees);
     if (AppState.vueActive === 'magasins')  rendreGanttMagasins(AppState.donnees);
+    // Centrer le zoom sur 18h00 du jour sélectionné (point fixe = 18h)
+    var ppm = AppState.PPM;
+    var LABEL_W = 200;
+    var pos1630_flux = LABEL_W + (16 * 60 + 30) * ppm; // origine 0h dans la vue Flux
+    var pfpEl = document.getElementById('pfp-timeline-wrapper');
+    if (pfpEl) pfpEl.scrollLeft = Math.max(0, pos1630_flux - pfpEl.clientWidth / 2);
+    if (AppState.vueActive === 'remorques') {
+      var remEl = document.getElementById('gantt-remorques');
+      if (remEl) remEl.scrollLeft = Math.max(0, LABEL_W + (10 * 60 + 30) * ppm - remEl.clientWidth / 2);
+    }
   }
 }
 
@@ -3043,6 +3136,7 @@ function getTourneeParam(tid, paramIdx, data) {
 
 // ── Panel tournées — afficher les paramètres du module sélectionné ──
 var _moduleSelectionne = null;
+var _moduleSelectionneAvantFlux = null; // sauvegarde pendant l'onglet Flux
 // ── Auto-fill optimisé — globals ──
 
 function selectionnerModule(modId) {
@@ -3830,7 +3924,7 @@ function rendrePlanningFlux(data) {
 
   var filtres = tousFlux.filter(function(f) {
     var okJour     = !jour                              || _jMat(f.jour) === _jMat(jour);
-    var okMarc     = !Object.keys(selMarc).length       || selMarc[f.marchandise];
+    var okMarc     = !Object.keys(selMarc).length       || selMarc[f.marchandise] || f._isFluxVide;
     var okMag      = !Object.keys(selMag).length        || selMag[f.magasin];
     var okEntrepot = !Object.keys(selEntr).length       || selEntr[f.entrepot];
     var okZoneLog  = !Object.keys(selZoneLog).length    || selZoneLog[f.zoneEntrepot];
@@ -3903,21 +3997,39 @@ function rendrePlanningFlux(data) {
   filtres.forEach(function(f) {
     // Calcul UT attribué pour ce flux
     var utAff = 0;
-    Object.keys(AppState.planLocal).forEach(function(tid) {
-      (AppState.planLocal[tid] || []).forEach(function(pf) {
-        if (pf.magasin === f.magasin && pf.marchandise === f.marchandise && pf.entrepot === f.entrepot && !pf._isFluxNavettise) {
-          utAff += parseFloat(pf.utAffecte !== undefined ? pf.utAffecte : pf.ut) || 0;
-        }
+    if (f._fluxManuelId) {
+      if (f._isFluxVide) {
+        // Flux vide (0 UT) : disparaît une fois assigné à une tournée
+        var assigneVide = Object.keys(AppState.planLocal).some(function(tid) {
+          return (AppState.planLocal[tid] || []).some(function(pf) { return pf._fluxManuelId === f._fluxManuelId; });
+        });
+        if (assigneVide) return;
+      } else {
+        // Flux manuel non-vide : assignation partielle possible, utAff calculé par _fluxManuelId
+        Object.keys(AppState.planLocal).forEach(function(tid) {
+          (AppState.planLocal[tid] || []).forEach(function(pf) {
+            if (pf._fluxManuelId === f._fluxManuelId) {
+              utAff += parseFloat(pf.utAffecte !== undefined ? pf.utAffecte : pf.ut) || 0;
+            }
+          });
+        });
+        if (f.ut > 0 && utAff >= f.ut - 0.01) return;
+      }
+    } else {
+      Object.keys(AppState.planLocal).forEach(function(tid) {
+        (AppState.planLocal[tid] || []).forEach(function(pf) {
+          if (pf.magasin === f.magasin && pf.marchandise === f.marchandise && pf.entrepot === f.entrepot && !pf._isFluxNavettise) {
+            utAff += parseFloat(pf.utAffecte !== undefined ? pf.utAffecte : pf.ut) || 0;
+          }
+        });
       });
-    });
-    // Soustraire les UT déjà couvertes par navettisation (navette créée = engagement de livraison via relais)
-    var utNavettise = (AppState.fluxNavettes || []).filter(function(fn) {
-      return fn.magasin === f.magasin && fn.marchandise === f.marchandise && fn.entrepotOrigine === f.entrepot;
-    }).reduce(function(s, fn) { return s + fn.utNavette; }, 0);
-    utAff += utNavettise;
-
-    var estComplet = f.ut > 0 && utAff >= f.ut - 0.01;
-    if (estComplet) return;
+      // Soustraire les UT déjà couvertes par navettisation (navette créée = engagement de livraison via relais)
+      var utNavettise = (AppState.fluxNavettes || []).filter(function(fn) {
+        return fn.magasin === f.magasin && fn.marchandise === f.marchandise && fn.entrepotOrigine === f.entrepot;
+      }).reduce(function(s, fn) { return s + fn.utNavette; }, 0);
+      utAff += utNavettise;
+      if (f.ut > 0 && utAff >= f.ut - 0.01) return;
+    }
 
     var travelMin = distMap[f.entrepot + '_' + f.magasin];
     var _slots = tousCreneaux(f.magasin, f.marchandise);
@@ -4102,15 +4214,22 @@ function rendrePlanningFlux(data) {
 
     var el = document.createElement('div');
     el.className = 'flux-block' + (b.utAff > 0 ? ' flux-block-partiel' : '');
+    if (f._isFluxManuel) el.classList.add('flux-block-manuel');
     el.style.left = xClamped + 'px';
     el.style.width = wClamped + 'px';
     el.style.top = top + 'px';
     el.style.background = col;
 
     var utRestant = Math.round((f.ut - b.utAff) * 10) / 10;
-    var utLabel = b.utAff > 0 ? utRestant + ' UT' : f.ut + ' UT';
+    var utLabel = f._isFluxVide ? 'EMB' : (b.utAff > 0 ? utRestant + ' UT' : f.ut + ' UT');
     var nomLabel = f.magasin.length > 14 ? f.magasin.substring(0, 13) + '…' : f.magasin;
-    nomLabel += ' · ' + f.marchandise;
+    nomLabel += f._isFluxVide ? '' : (' · ' + f.marchandise);
+    if (f._isFluxManuel) {
+      var badgeManuel = document.createElement('span');
+      badgeManuel.className = 'pfp-badge-manuel';
+      badgeManuel.textContent = f._isFluxVide ? 'VIDE' : 'MANUEL';
+      el.appendChild(badgeManuel);
+    }
     var badge = document.createElement('span');
     badge.className = 'pfp-block-ut';
     badge.textContent = utLabel;
@@ -4150,7 +4269,10 @@ function rendrePlanningFlux(data) {
 
     var fluxData = { magasin: f.magasin, marchandise: f.marchandise, ut: f.ut,
       entrepot: f.entrepot, zoneLivraison: f.zoneLivraison,
-      centreComm: f.centreComm, zoneEntrepot: f.zoneEntrepot };
+      centreComm: f.centreComm, zoneEntrepot: f.zoneEntrepot,
+      _isFluxManuel: f._isFluxManuel || undefined,
+      _isFluxVide:   f._isFluxVide   || undefined,
+      _fluxManuelId: f._fluxManuelId || undefined };
     el.draggable = true;
     el.addEventListener('dragstart', function(e) {
       e.dataTransfer.setData('text/plain', JSON.stringify(fluxData));
@@ -4277,37 +4399,44 @@ function rendrePlanningFlux(data) {
           row.appendChild(sep);
         }
 
-        // Bloc flux dérivé (entrepôtRelay → magasin) — UT propre au dérivé, indépendant de la navette
-        var utDer = derItem ? (parseFloat(derItem.ut) || pair.utNavette) : pair.utNavette;
-        (function(derPayload, placed) {
-          var el = document.createElement('div');
-          el.className = 'pfp-navpair-item' + (placed ? ' placed' : '');
-          el.style.background = '#0097A7';
-          el.textContent = (placed ? '✓ ' : '') + pair.entrepotRelay + ' → ' + pair.magasin + ' · ' + utDer + ' UT';
-          el.title = (placed ? 'Flux dérivé planifié' : 'Glisser vers une tournée départ ' + pair.entrepotRelay) + '\n' + pair.entrepotRelay + ' → ' + pair.magasin + '\n' + utDer + ' UT ' + pair.marchandise;
-          if (!placed) {
-            el.draggable = true;
-            el.addEventListener('dragstart', function(e) {
-              e.dataTransfer.setData('text/plain', JSON.stringify(derPayload));
-              el.classList.add('dragging');
-            });
-            el.addEventListener('dragend', function() { el.classList.remove('dragging'); });
-          }
-          row.appendChild(el);
-        })({ magasin: pair.magasin, marchandise: pair.marchandise, ut: utDer,
-             entrepot: pair.entrepotRelay,
-             zoneLivraison: derItem ? (derItem.zoneLivraison || '') : '',
-             centreComm: derItem ? (derItem.centreComm || '') : '',
-             zoneEntrepot: derItem ? (derItem.zoneEntrepot || '') : '',
-             _navFluxId: pair._navFluxId, _isFluxNavettise: true }, derivePlacee);
+        // Bloc flux dérivé (entrepôtRelay → magasin) — affiché uniquement si son jour correspond au jour courant
+        if (derMatchesDay) {
+          var utDer = derItem ? (parseFloat(derItem.ut) || pair.utNavette) : pair.utNavette;
+          (function(derPayload, placed) {
+            var el = document.createElement('div');
+            el.className = 'pfp-navpair-item' + (placed ? ' placed' : '');
+            el.style.background = '#0097A7';
+            el.textContent = (placed ? '✓ ' : '') + pair.entrepotRelay + ' → ' + pair.magasin + ' · ' + utDer + ' UT';
+            el.title = (placed ? 'Flux dérivé planifié' : 'Glisser vers une tournée départ ' + pair.entrepotRelay) + '\n' + pair.entrepotRelay + ' → ' + pair.magasin + '\n' + utDer + ' UT ' + pair.marchandise;
+            if (!placed) {
+              el.draggable = true;
+              el.addEventListener('dragstart', function(e) {
+                e.dataTransfer.setData('text/plain', JSON.stringify(derPayload));
+                el.classList.add('dragging');
+              });
+              el.addEventListener('dragend', function() { el.classList.remove('dragging'); });
+            }
+            row.appendChild(el);
+          })({ magasin: pair.magasin, marchandise: pair.marchandise, ut: utDer,
+               entrepot: pair.entrepotRelay,
+               zoneLivraison: derItem ? (derItem.zoneLivraison || '') : '',
+               centreComm: derItem ? (derItem.centreComm || '') : '',
+               zoneEntrepot: derItem ? (derItem.zoneEntrepot || '') : '',
+               _navFluxId: pair._navFluxId, _isFluxNavettise: true }, derivePlacee);
+        }
 
         // Statut global + bouton supprimer
         var status = document.createElement('span');
         status.className = 'pfp-navpair-status';
         var estOrpheline = !navItem;
+        var _crossDay = navMatchesDay !== derMatchesDay;
         status.textContent = estOrpheline
           ? (derivePlacee ? '✓ Planifiée' : '⋯ Flux dérivé à planifier')
-          : (navPlacee && derivePlacee ? '✓ Planifiée' : navPlacee ? '⋯ Flux dérivé restant' : '⋯ À planifier');
+          : _crossDay && navMatchesDay
+            ? (navPlacee ? '✓ Navette planifiée' : '⋯ Navette à planifier')
+            : _crossDay && derMatchesDay
+              ? (derivePlacee ? '✓ Planifiée' : '⋯ Flux dérivé à planifier')
+              : (navPlacee && derivePlacee ? '✓ Planifiée' : navPlacee ? '⋯ Flux dérivé restant' : '⋯ À planifier');
 
         (function(navFluxId) {
           var delB = document.createElement('button');
@@ -4363,15 +4492,30 @@ function rendrePlanningFlux(data) {
                      _isFluxNavettise: true };
       } else {
         col      = getCouleurZone(f.zoneEntrepot || getZoneEntrepot(f.entrepot));
-        txt      = (f.magasin.length > 12 ? f.magasin.substring(0, 11) + '…' : f.magasin) + ' · ' + f.marchandise;
-        titleTxt = f.magasin + '\n' + f.marchandise + ' — ' + f.ut + ' UT\n' +
-                   (distMap[f.entrepot + '_' + f.magasin] == null ? 'Distancier manquant' : 'Créneau absent');
+        if (f._isFluxManuel) {
+          var magShort = f.magasin.length > 12 ? f.magasin.substring(0, 11) + '…' : f.magasin;
+          txt      = f._isFluxVide
+            ? ('🔄 ' + (f.entrepot || '') + ' → ' + magShort + ' (VIDE)')
+            : ('🔄 ' + (f.entrepot || '') + ' → ' + magShort + ' · ' + f.ut + ' UT ' + f.marchandise);
+          titleTxt = (f._isFluxVide ? 'Flux vide (récupération emballages)' : 'Flux manuel') +
+                     '\n' + f.entrepot + ' → ' + f.magasin +
+                     (f._isFluxVide ? '' : ('\n' + f.marchandise + ' — ' + f.ut + ' UT')) +
+                     '\nGlisser vers une tournée · ✕ pour supprimer';
+        } else {
+          txt      = (f.magasin.length > 12 ? f.magasin.substring(0, 11) + '…' : f.magasin) + ' · ' + f.marchandise;
+          titleTxt = f.magasin + '\n' + f.marchandise + ' — ' + f.ut + ' UT\n' +
+                     (distMap[f.entrepot + '_' + f.magasin] == null ? 'Distancier manquant' : 'Créneau absent');
+        }
         payload  = { magasin: f.magasin, marchandise: f.marchandise, ut: f.ut, entrepot: f.entrepot,
-                     zoneLivraison: f.zoneLivraison, centreComm: f.centreComm, zoneEntrepot: f.zoneEntrepot };
+                     zoneLivraison: f.zoneLivraison, centreComm: f.centreComm, zoneEntrepot: f.zoneEntrepot,
+                     _isFluxManuel: f._isFluxManuel || undefined,
+                     _isFluxVide:   f._isFluxVide   || undefined,
+                     _fluxManuelId: f._fluxManuelId || undefined };
       }
 
       var el = document.createElement('div');
       el.className = 'flux-block-unplaced' + (!b.isNavette && !b.isFluxDerive && b.utAff > 0 ? ' flux-block-partiel' : '');
+      if (f._isFluxManuel) el.classList.add('flux-block-unplaced-manuel');
       el.style.background = col;
       el.textContent = txt;
       el.title = titleTxt;
@@ -4422,6 +4566,18 @@ function rendrePlanningFlux(data) {
           el.style.position = 'relative';
           el.appendChild(delB);
         })(f._navetteId, f._navFluxId, b.isFluxDerive);
+      }
+      // Bouton ✕ sur les flux manuels / flux vides
+      if (f._fluxManuelId) {
+        (function(fmId) {
+          var delFM = document.createElement('button');
+          delFM.style.cssText = 'position:absolute;top:2px;right:2px;background:rgba(0,0,0,0.2);border:none;border-radius:2px;color:#fff;font-size:9px;cursor:pointer;padding:0 3px;line-height:1.4';
+          delFM.textContent = '✕';
+          delFM.title = 'Supprimer ce flux';
+          delFM.addEventListener('click', function(e) { e.stopPropagation(); supprimerFluxManuel(fmId); });
+          el.style.position = 'relative';
+          el.appendChild(delFM);
+        })(f._fluxManuelId);
       }
 
       if (!b.isNavette && !b.isFluxDerive) {
@@ -4517,6 +4673,84 @@ function _getEntrepotsConnus() {
     (AppState.planLocal[tid] || []).forEach(function(f) { if (f.entrepot) set[f.entrepot] = true; });
   });
   return Object.keys(set).sort();
+}
+
+// ── Flux vide / Flux manuel ─────────────────────────────
+function _getMagasinsConnus() {
+  var set = {};
+  if (AppState.donnees) {
+    (AppState.donnees.flux || []).slice(1).forEach(function(row) {
+      var m = row[4] ? row[4].toString().trim() : '';
+      if (m) set[m] = true;
+    });
+  }
+  (AppState.fluxLocaux || []).forEach(function(f) { if (f.magasin) set[f.magasin] = true; });
+  return Object.keys(set).sort();
+}
+function ouvrirModalFluxManuel() {
+  if (!AppState.donnees) {
+    afficherToast('⚠️ Chargez d\'abord le fichier Excel', 'avertissement');
+    return;
+  }
+  var entrepots = _getEntrepotsConnus();
+  var magasins  = _getMagasinsConnus();
+  if (!entrepots.length || !magasins.length) {
+    afficherToast('⚠️ Données insuffisantes — entrepôts ou magasins introuvables', 'avertissement');
+    return;
+  }
+  var selDep = document.getElementById('fm-dep');
+  var selMag = document.getElementById('fm-mag');
+  selDep.innerHTML = entrepots.map(function(e) { return '<option value="' + e + '">' + e + '</option>'; }).join('');
+  selMag.innerHTML = magasins.map(function(m) { return '<option value="' + m + '">' + m + '</option>'; }).join('');
+  // Forcer mode "vide" à l'ouverture
+  document.querySelector('input[name="fm-mode"][value="vide"]').checked = true;
+  document.getElementById('fm-manuel-fields').style.display = 'none';
+  document.getElementById('modal-flux-manuel').classList.add('visible');
+}
+function _majModeFluxManuel() {
+  var mode = document.querySelector('input[name="fm-mode"]:checked');
+  var fields = document.getElementById('fm-manuel-fields');
+  if (mode && mode.value === 'manuel') {
+    fields.style.display = 'grid';
+  } else {
+    fields.style.display = 'none';
+  }
+}
+function confirmerFluxManuel() {
+  var dep  = (document.getElementById('fm-dep') || {}).value || '';
+  var mag  = (document.getElementById('fm-mag') || {}).value || '';
+  var modeEl = document.querySelector('input[name="fm-mode"]:checked');
+  var mode = modeEl ? modeEl.value : 'vide';
+  if (!dep || !mag) { afficherToast('⚠️ Sélectionnez un entrepôt et un magasin', 'avertissement'); return; }
+  var ut = 0, marc = '', isVide = true;
+  if (mode === 'manuel') {
+    ut     = parseFloat((document.getElementById('fm-ut') || {}).value) || 0;
+    marc   = (document.getElementById('fm-marc') || {}).value || 'PGC';
+    isVide = false;
+  }
+  AppState.fluxLocaux = AppState.fluxLocaux || [];
+  AppState.fluxLocaux.push({
+    entrepot:      dep,
+    magasin:       mag,
+    marchandise:   marc,
+    ut:            ut,
+    jour:          AppState.jourActif || '',
+    zoneEntrepot:  getZoneEntrepot(dep) || '',
+    zoneLivraison: '',
+    centreComm:    '',
+    _fluxManuelId: 'FM_' + Date.now(),
+    _isFluxManuel: true,
+    _isFluxVide:   isVide
+  });
+  fermerModal('modal-flux-manuel');
+  afficherToast('🔄 Flux ' + (isVide ? 'vide' : 'manuel') + ' ' + dep + ' → ' + mag + ' créé', 'succes');
+  if (AppState.donnees) rendrePlanningFlux(AppState.donnees);
+}
+function supprimerFluxManuel(fluxManuelId) {
+  AppState.fluxLocaux = (AppState.fluxLocaux || []).filter(function(f) {
+    return f._fluxManuelId !== fluxManuelId;
+  });
+  if (AppState.donnees) rendrePlanningFlux(AppState.donnees);
 }
 
 // ── Navette à vide ──────────────────────────────────────
@@ -5155,7 +5389,7 @@ function _computeTourneeInterval(modId, tid, offset, data, distMap) {
   var barEnd       = blocs.length > 0
     ? blocs[blocs.length-1].debut + blocs[blocs.length-1].duree
     : tractorStart + adm + 30;
-  return { start: barLeft, end: barEnd };
+  return { start: barLeft, end: barEnd, effectiveRetour: blocs._effectiveRetour || ret };
 }
 
 // Retourne true si ent1 et ent2 appartiennent à la même zone entrepôt.
@@ -6034,8 +6268,8 @@ function rendreGantt(data) {
           _latestAdjEnd = _adjEnd;
           var _prevT  = getTourneeData(prevTid, data);
           var _prevOv = (AppState.tourneeOverrides && AppState.tourneeOverrides[prevTid]) || {};
-          _latestRetour = _prevOv.retour !== undefined ? _prevOv.retour
-            : (_prevT && _prevT[2] ? _prevT[2].toString() : 'ENTREPOT');
+          _latestRetour = _iv.effectiveRetour || (_prevOv.retour !== undefined ? _prevOv.retour
+            : (_prevT && _prevT[2] ? _prevT[2].toString() : 'ENTREPOT'));
         }
       });
       if (_latestRetour) prevRetourModule = _latestRetour;
@@ -6305,6 +6539,30 @@ function rendreGantt(data) {
           segEl.addEventListener('mousedown', function(e) {
             if (AppState._cisailleMode) e.stopPropagation();
           });
+        }
+
+        // ── Flux vide (0 UT, passage emballages) — barre fine + label dessous ──
+        if (bloc.type === 'livraison' && bloc.duree === 0 && bloc.arret && bloc.arret._isFluxVide) {
+          var nomMagVide  = bloc.arret.magasin || bloc.arret.lieu || '?';
+          var nomCourtVide = nomMagVide.length > 11 ? nomMagVide.substring(0, 10) + '…' : nomMagVide;
+          segEl.classList.add('tour-seg-flux-vide');
+          segEl.style.width      = '3px';
+          segEl.style.background = '#7B1FA2';
+          segEl.setAttribute('data-gtip', nomMagVide + ' — passage emballages (0 UT)');
+          (function(el) {
+            el.addEventListener('mouseover', function(e) { _showGanttTip(e, el.getAttribute('data-gtip')); });
+            el.addEventListener('mousemove', _moveGanttTip);
+            el.addEventListener('mouseout',  _hideGanttTip);
+          })(segEl);
+          bar.appendChild(segEl);
+          var lblVide = document.createElement('div');
+          lblVide.className   = 'tour-seg-vide-label';
+          lblVide.textContent = nomCourtVide;
+          lblVide.title       = nomMagVide + ' — passage emballages (0 UT)';
+          lblVide.style.left  = (bloc.debut * PPM) + 'px';
+          lblVide.style.top   = (BAR_TOP0 + BAR_H + 2) + 'px';
+          track.appendChild(lblVide);
+          return; // ne pas exécuter le rendu livraison standard
         }
 
         if (bloc.type === 'livraison') {
@@ -7081,6 +7339,12 @@ function onFluxDepose(flux, tourneeId, capacite) {
   if (flux.isNavette && !(parseFloat(flux.ut) > 0)) {
     var testR2z = validerCompatibiliteMarchandises((AppState.planLocal[tourneeId] || []).concat([flux]));
     if (!testR2z.valide) { afficherToast('🚫 R2 — Incompatibilité : ' + testR2z.incompatibilites.join(', '), 'erreur'); return; }
+    _executerDepotFlux(Object.assign({}, flux, { utAffecte: 0 }), tourneeId, capacite || 33);
+    return;
+  }
+
+  // Flux vide (passage emballages — 0 UT) : dépôt direct sans vérif capacité ni modal de fraction
+  if (flux._isFluxVide) {
     _executerDepotFlux(Object.assign({}, flux, { utAffecte: 0 }), tourneeId, capacite || 33);
     return;
   }
@@ -10024,7 +10288,16 @@ function onJourChange(jour) {
 }
 
 function basculerVue(vue) {
+  var vuePrec = AppState.vueActive;
   AppState.vueActive = vue;
+  // Sélection module : forcer Atelier (M0) dans l'onglet Flux, restaurer sinon
+  if (vue === 'flux' && vuePrec !== 'flux') {
+    _moduleSelectionneAvantFlux = _moduleSelectionne;
+    selectionnerModule('M0');
+  } else if (vue !== 'flux' && vuePrec === 'flux') {
+    selectionnerModule(_moduleSelectionneAvantFlux || 'M0');
+    _moduleSelectionneAvantFlux = null;
+  }
   // Panneau flux : visible uniquement dans l'onglet Flux
   document.getElementById('panneau-flux-planning').style.display = vue === 'flux' ? '' : 'none';
   // Gantt modules : visible dans Flux (atelier seul via CSS) et dans Modules (tous les modules)
