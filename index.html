@@ -2245,7 +2245,7 @@ function validerTournee(params) {
 // Retourne une liste de blocs {type, debut (min), duree (min), label, color, arret?, idx?}
 // debutMin = minutes absolues depuis minuit (0-1800 pour le Gantt 0h-30h)
 // _initDrive/_initService : état conducteur hérité de la tournée précédente (chaînage cross-tournée)
-function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retourLieu, hookDur, lieuDepart, _initDrive, _initService, manualBreaks, _initPauseServiceFaite, _initBonusConduiteUsed, _chauffeurSplits, parallelConvertMap) {
+function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retourLieu, hookDur, lieuDepart, _initDrive, _initService, manualBreaks, _initPauseServiceFaite, _initBonusConduiteUsed, _chauffeurSplits, parallelConvertMap, skipDeccrochage, chgtDur) {
   var LIMITE_C = 270; // 4h30 de conduite continue
   var LIMITE_S = 360; // 6h00 de service continu
   retourLieu = retourLieu || 'ENTREPOT';
@@ -2265,6 +2265,13 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
   // Liste partagée des splits chauffeur restant à consommer — initialisée UNE SEULE FOIS
   // (ne pas re-déclarer dans le forEach sinon chaque arret repart avec la liste complète)
   var _csSplitsAll       = (_chauffeurSplits || []).slice();
+
+  // Pause parallèle pendant le bloc de chargement (PF/FL/SURG uniquement).
+  // À appeler avant toute autre logique de planification si chgtDur > 0.
+  var _chgtDurVal = +chgtDur || 0;
+  if (_chgtDurVal > 0) {
+    checkParallelBreaks(debutMin - hookDur - _chgtDurVal, _chgtDurVal);
+  }
 
   function getDurConduite() { return (pauseServiceFaite && !bonusPauseCondUsed) ? 30 : 45; }
 
@@ -2359,16 +2366,21 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
       var brkType = opt ? 'conduite' : 'service';
 
       if (_convMode === 'amont' && slotDur >= brkDur) {
-        // Insérer la pause AVANT le bloc de livraison/emballage.
-        // Le bloc est déjà dans blocs et curseur l'a dépassé → on l'extrait, recule, insère, remet.
-        var _savedBloc = blocs.pop();
-        curseur   -= slotDur;
-        serviceMin -= slotDur;
-        hardBreak(brkType, brkDur, { isParallelConvert: true, convertAt: slotAt });
-        _savedBloc.debut = curseur;
-        blocs.push(_savedBloc);
-        curseur    += slotDur;
-        serviceMin += slotDur;
+        if (blocs.length === 0) {
+          // Bloc de chargement : pas de bloc à réordonner → repli en parallèle
+          parallelBreak(brkType, brkDur, slotAt, slotDur);
+        } else {
+          // Insérer la pause AVANT le bloc de livraison/emballage.
+          // Le bloc est déjà dans blocs et curseur l'a dépassé → on l'extrait, recule, insère, remet.
+          var _savedBloc = blocs.pop();
+          curseur   -= slotDur;
+          serviceMin -= slotDur;
+          hardBreak(brkType, brkDur, { isParallelConvert: true, convertAt: slotAt });
+          _savedBloc.debut = curseur;
+          blocs.push(_savedBloc);
+          curseur    += slotDur;
+          serviceMin += slotDur;
+        }
       } else if (_convMode === 'aval' && slotDur >= brkDur) {
         // Insérer la pause APRÈS le bloc : curseur est déjà positionné après le bloc.
         hardBreak(brkType, brkDur, { isParallelConvert: true, convertAt: slotAt + slotDur });
@@ -2582,7 +2594,7 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
       checkHardBreaks();
     }
 
-    if (hookDur > 0) {
+    if (hookDur > 0 && !skipDeccrochage) {
       var decrochDur = (lastNavetteDest && lastNavetteUT > 0) ? tD(lastNavetteUT) : hookDur;
       serviceMin += decrochDur; // décrochage = service
       blocs.push({ type:'deccrochage', debut:curseur, duree:decrochDur, label:'Décrochage — ' + effectiveRetour, destination: effectiveRetour, color:'#607D8B' });
@@ -2824,7 +2836,7 @@ function calculerKPITrinome() {
       // Frais : offset = début chargement tracteur ; non-frais : offset = début accrochage chauffeur
       var tractorStart = isFrais ? (offset + chgtDur + admDur) : (offset + admDur);
       var hookStart    = offset; // dans les deux cas le chauffeur démarre au service à l'offset
-      var blocs = calculerPlanningGantt(tractorStart, flux, distMap, reglesDech, retour, admDur, lieuDepart);
+      var blocs = calculerPlanningGantt(tractorStart, flux, distMap, reglesDech, retour, admDur, lieuDepart, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, isFrais ? chgtDur : 0);
       var fin = blocs.length > 0
         ? blocs[blocs.length - 1].debut + blocs[blocs.length - 1].duree
         : tractorStart + admDur + 30;
@@ -3186,6 +3198,10 @@ function afficherPanelTournees(modId) {
       var m = (f.marchandise || '').toUpperCase();
       return m === 'FL' || m === 'PF' || m === 'SURG';
     });
+    var isFraisSeul = flux.some(function(f) {
+      var m = (f.marchandise || '').toUpperCase();
+      return m === 'FL' || m === 'PF';
+    });
     var cap = ov.capacite !== undefined ? +ov.capacite : (t ? (parseFloat(t[1]) || 33) : 33);
     var chg = ov.chgtDur  !== undefined ? +ov.chgtDur  : (t ? (parseFloat(t[4]) || (isFOS ? 60 : 0)) : (isFOS ? 60 : 0));
     var adm = ov.admDur   !== undefined ? +ov.admDur   : (t ? (parseFloat(t[3]) || 15) : 15);
@@ -3289,6 +3305,27 @@ function afficherPanelTournees(modId) {
         chgRow.appendChild(chip);
       });
       card.appendChild(chgRow);
+
+      // ── Décrochage (PF/FL uniquement) ──────────────────
+      if (isFraisSeul) {
+        var dechRow = document.createElement('div');
+        dechRow.style.cssText = 'display:flex;align-items:center;gap:4px;margin-bottom:5px;font-size:10px;color:#546E7A';
+        var dechLbl = document.createElement('span');
+        dechLbl.textContent = '🔗 Décrochage :';
+        dechRow.appendChild(dechLbl);
+        [false, true].forEach(function(supprime) {
+          var chip = document.createElement('button');
+          var active = supprime ? !!ov.sansDecroche : !ov.sansDecroche;
+          chip.style.cssText = 'padding:0 4px;font-size:8px;font-weight:700;border-radius:3px;cursor:pointer;border:1px solid;height:15px;' +
+            (active ? (supprime ? 'background:#B71C1C;color:#fff;border-color:#B71C1C' : 'background:#2E7D32;color:#fff;border-color:#2E7D32')
+                    : 'background:#F5F5F5;color:#90A4AE;border-color:#E0E0E0');
+          chip.textContent = supprime ? 'Supprimé' : 'Activé';
+          chip.title = supprime ? 'Supprimer le bloc décrochage de cette tournée' : 'Conserver le bloc décrochage (défaut)';
+          (function(tId, val) { chip.addEventListener('click', function() { majOverride(tId, 'sansDecroche', val); }); })(tid, supprime);
+          dechRow.appendChild(chip);
+        });
+        card.appendChild(dechRow);
+      }
     }
 
     // ── Barre de composition (même code couleur que le Gantt) ──────────
@@ -5504,7 +5541,7 @@ function detecterChevauchementTracteur(mod, data, distMapGantt, reglesDechGantt)
     var tractorRouteStart = hasFrais ? (offset + chgtDur + admDur) : (offset + admDur);
     // lieuDepart identique à rendreGantt (anti-téléportation + flux[0].entrepot)
     var lieuDepart = prevRetour || (flux[0] && flux[0].entrepot) || zone || 'ENTREPOT';
-    var blocs = calculerPlanningGantt(tractorRouteStart, flux, distMapGantt, reglesDechGantt, retour, admDur, lieuDepart);
+    var blocs = calculerPlanningGantt(tractorRouteStart, flux, distMapGantt, reglesDechGantt, retour, admDur, lieuDepart, undefined, undefined, undefined, undefined, undefined, undefined, undefined, !!ov.sansDecroche, hasFrais ? chgtDur : 0);
     var fin = blocs.length > 0
       ? blocs[blocs.length - 1].debut + blocs[blocs.length - 1].duree
       : tractorRouteStart + admDur + 30;
@@ -6342,7 +6379,7 @@ function rendreGantt(data) {
       }
       var _chauffeurSplitsForTid = ((AppState.chauffeurSplits || {})[mod.id + '_' + tid] || []).slice();
       var _convertMapForTid = ((AppState.parallelBreakConvert || {})[mod.id + '_' + tid]) || {};
-      var blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, manualBreaksForTid, driverPSF, driverBCU, _chauffeurSplitsForTid, _convertMapForTid);
+      var blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, manualBreaksForTid, driverPSF, driverBCU, _chauffeurSplitsForTid, _convertMapForTid, !!ov.sansDecroche, hasFraisTournee ? chgtDur : 0);
       // Nettoyer les overrides non injectés (ex : position tombée dans un bloc livraison)
       if (blocs._injectedMBAt && allPauseOvs.length > 0) {
         var _inj = blocs._injectedMBAt;
@@ -6387,7 +6424,7 @@ function rendreGantt(data) {
           if (_needsRebloc) {
             // Recalculer les blocs avec la position corrigée du fragment 2
             var _mbFixed = _cleanOvs.filter(function(o) { return !o.gap; });
-            blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, _mbFixed, driverPSF, driverBCU, _chauffeurSplitsForTid, _convertMapForTid);
+            blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, _mbFixed, driverPSF, driverBCU, _chauffeurSplitsForTid, _convertMapForTid, !!ov.sansDecroche, hasFraisTournee ? chgtDur : 0);
           }
         }
       }
@@ -8619,6 +8656,8 @@ function _afOpt_appliquerReglesShift(modId, mod) {
 }
 
 function _afOpt_placerGroupe(groupe, best, dm, jour) {
+  var isFraisOuSurgDetail = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG');
+  var chgtDurG = isFraisOuSurgDetail ? 60 : 0;
   var SETUP    = isFraisOuSurgDetail ? 75 : 15;
   var DECROCHE = 15;
 
@@ -8705,7 +8744,7 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
   // ── finMin réel via calculerPlanningGantt (même logique que rendu + outline rouge) ──
   var _calcActualFinMin = function(off) {
     if (!_opt_dmU || !Object.keys(_opt_dmU).length) return off + SETUP + best.duree + DECROCHE;
-    var bcs = calculerPlanningGantt(off + SETUP, _fluxOrdonnes, _opt_dmU, [], groupe.entrepot, 15, groupe.entrepot);
+    var bcs = calculerPlanningGantt(off + SETUP, _fluxOrdonnes, _opt_dmU, [], groupe.entrepot, 15, groupe.entrepot, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, chgtDurG);
     return bcs.length > 0 ? bcs[bcs.length - 1].debut + bcs[bcs.length - 1].duree
                           : off + SETUP + best.duree + DECROCHE;
   };
