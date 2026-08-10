@@ -8828,6 +8828,27 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
         AppState.tourneeOverrides[prevEntry.tid].retour = groupe.entrepot;
       }
     }
+
+    // ── 5.3c : Mettre à jour le retour de T_new vers l'entrepôt de T_next ──
+    // Si T_new est inséré avant un T_next existant, le tracteur devra aller
+    // de T_new.retour à T_next.entrepôt. On oriente T_new directement vers
+    // T_next.entrepôt pour éviter la téléportation.
+    var nextEntry = (targetInsertIdx + 1 < targetMod.tours.length)
+        ? targetMod.tours[targetInsertIdx + 1] : null;
+    if (nextEntry && lastStoreNew) {
+      var dNewToNextE   = _afOpt_getDist(dm, lastStoreNew, nextEntry.entrepot);
+      var newRetDurNew  = dNewToNextE ? dNewToNextE.m : 0;
+      var newFinMinNew  = tourEntry.finMin - tourEntry._retourDuree + newRetDurNew;
+      // N'appliquer que si ça ne déborde pas sur T_next (sécurité)
+      if (newFinMinNew <= nextEntry.offsetMin) {
+        tourEntry.finMin       = newFinMinNew;
+        tourEntry._retourDuree = newRetDurNew;
+        tourEntry.retour       = nextEntry.entrepot;
+        if (!AppState.tourneeOverrides) AppState.tourneeOverrides = {};
+        if (!AppState.tourneeOverrides[tid]) AppState.tourneeOverrides[tid] = {};
+        AppState.tourneeOverrides[tid].retour = nextEntry.entrepot;
+      }
+    }
   } else {
     // Créer un nouveau module
     var nums = AppState.modules.map(function(m) { return parseInt(m.id.replace(/\D/g, '')) || 0; });
@@ -9018,6 +9039,101 @@ function _afOpt_phase2LNS(tourStates, dm, jour, startCout, onProgress, onDone) {
   }
 
   runIter();
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PASSE DE CORRECTION — Chevauchements causés par pauses accumulées
+// ══════════════════════════════════════════════════════════════════
+// L'optimiseur utilise _initDrive=0 pour chaque tournée (état frais).
+// Le rendu accumule les heures de conduite/service entre tournées.
+// Quand une pause est insérée pendant le retour de T_prev dans le rendu
+// mais pas dans l'optimiseur, la barre rendue dépasse l'offsetMin de T_new.
+// Cette passe recompute le Gantt de chaque module avec l'état accumulé
+// et ajuste les offsetMins en conséquence.
+function _afOpt_corrigerChevauchements() {
+  if (!_opt_dmU || !Object.keys(_opt_dmU).length) return;
+
+  _afOpt_modulesInternes.forEach(function(mod) {
+    if (!mod.tours || mod.tours.length < 2) return;
+
+    // Les tournées sont déjà en ordre chronologique (splice en position lors du placement)
+    var tours = mod.tours.slice().sort(function(a, b) { return a.offsetMin - b.offsetMin; });
+
+    var drvDrive   = 0, drvService   = 0;
+    var drvPSF     = false, drvBCU   = false;
+    var prevEnd    = -Infinity;
+    var prevEffRet = null;
+    var prevWasSplit = false;
+
+    for (var i = 0; i < tours.length; i++) {
+      var te      = tours[i];
+      var SETUP_T = te._setup || 15;
+      var isFrais = SETUP_T > 15;
+      var chgtDur = isFrais ? 60 : 0;
+      var admDur  = 15;
+      var flux    = AppState.planLocal[te.tid] || [];
+      var retour  = te.retour || te.entrepot;
+
+      // Lieu de départ (anti-téléportation : part du retour effectif de T_prev)
+      var lieuDepart = (prevEffRet && !memeZoneEntrepot(prevEffRet, te.entrepot))
+                       ? prevEffRet : te.entrepot;
+
+      // Début de l'accrochage : avant l'admin pour FRAIS (= chargement + admin)
+      var accrocheStart = te.offsetMin + (isFrais ? chgtDur : 0);
+
+      // 1. Pousser la tournée si elle démarre avant la fin rendue de la précédente
+      if (prevEnd >= 0 && accrocheStart < prevEnd) {
+        var shift = Math.ceil(prevEnd - accrocheStart);
+        te.offsetMin += shift;
+        AppState.modulesOffsets[mod.modId + '_' + te.tid] = te.offsetMin;
+        accrocheStart = te.offsetMin + (isFrais ? chgtDur : 0);
+      }
+
+      // 2. Temps de blanc inter-tournée → service conducteur (sauf après coupure de shift)
+      if (prevEnd >= 0 && !prevWasSplit) {
+        drvService += Math.max(0, accrocheStart - prevEnd);
+      }
+
+      // 3. Appliquer les overrides de pause dans le blanc (pauses manuelles gap)
+      var allPauseOvs = (AppState.pauseOverrides || {})[mod.modId + '_' + te.tid] || [];
+      var hasGap = i > 0 && !prevWasSplit && prevEnd >= 0;
+      if (hasGap) {
+        allPauseOvs.filter(function(o) { return o.gap; }).forEach(function(go) {
+          if (go.type === 'conduite') { drvDrive = 0; drvService = 0; if (drvPSF && !drvBCU) drvBCU = true; }
+          else                        { drvService = 0; drvPSF = true; }
+        });
+      }
+
+      // 4. Calculer le Gantt avec l'état conducteur accumulé
+      var tractorStart    = te.offsetMin + SETUP_T;
+      var manualBreaks    = allPauseOvs.filter(function(o) { return !o.gap; });
+      var chauffeurSplits = ((AppState.chauffeurSplits  || {})[mod.modId + '_' + te.tid] || []).slice();
+      var convertMap      = ((AppState.parallelBreakConvert || {})[mod.modId + '_' + te.tid]) || {};
+
+      var bcs = calculerPlanningGantt(
+        tractorStart, flux, _opt_dmU, [], retour, admDur, lieuDepart,
+        drvDrive, drvService, manualBreaks, drvPSF, drvBCU,
+        chauffeurSplits, convertMap, false, chgtDur
+      );
+
+      // 5. Enchaîner l'état conducteur
+      drvDrive   = bcs._finalDrive             || 0;
+      drvService = bcs._finalService           || 0;
+      drvPSF     = bcs._finalPauseServiceFaite || false;
+      drvBCU     = bcs._finalBonusConduiteUsed || false;
+
+      // 6. Réinitialiser après coupure de shift
+      var isSplit = (AppState.shiftSplits[mod.modId] || []).indexOf(te.tid) >= 0;
+      if (isSplit) { drvDrive = 0; drvService = 0; drvPSF = false; drvBCU = false; }
+      prevWasSplit = isSplit;
+
+      // 7. Fin rendue = base du prochain prevEnd
+      prevEnd = bcs.length > 0
+        ? bcs[bcs.length - 1].debut + bcs[bcs.length - 1].duree
+        : (te.finMin || tractorStart + admDur + 30);
+      prevEffRet = bcs._effectiveRetour || retour;
+    }
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -9255,6 +9371,16 @@ function autoFillOptimise() {
             // placement issu de la Phase 1. On finalise directement avec les tourStates Phase 1.
             _afOpt_updateProgress(0.90, 'Phase 3 — Résolution navettes…');
             _afOpt_resolveNavettes(unplanned, tourStates, _opt_dm, _opt_jour);
+            _afOpt_corrigerChevauchements();
+            // Resynchroniser tourStates : finalizeAndRender réécrit AppState.modulesOffsets
+            // depuis tourStates, qui avait été capturé avant la correction des chevauchements.
+            // Sans cette synchro les corrections seraient effacées.
+            tourStates.forEach(function(ts) {
+              if (ts.modId) {
+                var k = ts.modId + '_' + ts.tid;
+                if (AppState.modulesOffsets[k] !== undefined) ts.offsetMin = AppState.modulesOffsets[k];
+              }
+            });
             _afOpt_updateProgress(1.00, 'Finalisation…');
             _afOpt_finalizeAndRender(tourStates, _opt_dm, _opt_jour, groupesNonPlaces, _afOpt_cancelled);
             return;
