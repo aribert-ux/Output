@@ -7697,14 +7697,16 @@ function autoFillGlouton() {
 // VARIABLES GLOBALES
 // ══════════════════════════════════════════════════════════════════
 
-var _afOpt_cancelled        = false;
-var _afOpt_startTime        = 0;
-var _afOpt_navetteCount     = 0;
-var _afOpt_autoCreatedTids  = [];
-var _afOpt_autoCreatedModIds = [];
-var _afOpt_storeSlots       = {};
-var _afOpt_modulesInternes  = [];
-var _opt_dmU                = {}; // distancier format underscore — accessible par _afOpt_placerGroupe
+var _afOpt_cancelled             = false;
+var _afOpt_startTime             = 0;
+var _afOpt_navetteCount          = 0;
+var _afOpt_autoCreatedTids       = [];
+var _afOpt_autoCreatedModIds     = [];
+var _afOpt_autoCreatedNavIds     = []; // _navetteId des navettes créées par l'optimiseur
+var _afOpt_autoCreatedNavFluxIds = []; // _navFluxId des navettisations créées par l'optimiseur
+var _afOpt_storeSlots            = {};
+var _afOpt_modulesInternes       = [];
+var _opt_dmU                     = {}; // distancier format underscore — accessible par _afOpt_placerGroupe
 
 var _FAMILLE_FRAIS = ['FL', 'PF'];
 var _FAMILLE_SURG  = ['SURG'];
@@ -7783,6 +7785,15 @@ function _afOpt_getCartoCreneau(magasin, jour, marchandise) {
 function _afOpt_collectFlux(donnees, jour) {
   var result = [];
   var jourLower = (_jMat(jour) || '').toLowerCase();
+
+  // UT navettisées par flux original (magasin|marchandise|entrepot) pour le jour
+  var utNavMap = {};
+  (AppState.fluxNavettes || []).forEach(function(fn) {
+    if ((_jMat(fn.jour) || '').toLowerCase() !== jourLower) return;
+    var key = fn.magasin + '|' + fn.marchandise + '|' + fn.entrepotOrigine;
+    utNavMap[key] = Math.round(((utNavMap[key] || 0) + fn.utNavette) * 10) / 10;
+  });
+
   var rows = (donnees && donnees.flux) ? donnees.flux.slice(1) : [];
   rows.forEach(function(row) {
     if (!row) return;
@@ -7794,15 +7805,39 @@ function _afOpt_collectFlux(donnees, jour) {
     var entr = row[1] ? row[1].toString().trim() : 'ENTREPOT';
     var zone = row[0] ? row[0].toString().trim() : '';
     if (!mag || !ut) return;
+
+    // Réduire les UT déjà navettisées depuis cet entrepôt d'origine
+    var navKey = mag + '|' + marc + '|' + entr;
+    var utEff  = Math.round((ut - (utNavMap[navKey] || 0)) * 10) / 10;
+    if (utEff <= 0) return; // flux entièrement navettisé
+
     result.push({
       magasin:      mag,
       marchandise:  marc,
-      ut:           ut,
+      ut:           utEff,
       entrepot:     entr,
       zoneEntrepot: zone,
       embDelai:     0
     });
   });
+
+  // Ajouter les flux dérivés (navettisés, planifiés depuis l'entrepôt d'accueil)
+  (AppState.fluxDerivesNavette || []).forEach(function(fd) {
+    if ((_jMat(fd.jour) || '').toLowerCase() !== jourLower) return;
+    result.push({
+      magasin:          fd.magasin,
+      marchandise:      fd.marchandise,
+      ut:               fd.ut,
+      entrepot:         fd.entrepot,
+      zoneEntrepot:     '',
+      embDelai:         0,
+      _isFluxNavettise: true,
+      _navFluxId:       fd._navFluxId,
+      _navetteId:       fd._navetteId || null,
+      _arriveeNavMin:   fd._arriveeNavMin || 360
+    });
+  });
+
   return result;
 }
 
@@ -7864,6 +7899,23 @@ function _afOpt_cleanupPreviousRun() {
   // Conserver les tids/modIds des autres jours pour les futures cleanup
   _afOpt_autoCreatedTids   = tidsAutresJours;
   _afOpt_autoCreatedModIds = modIdsAGarder;
+
+  // Supprimer les navettisations créées par l'optimiseur (toujours sur le jour actif)
+  if (_afOpt_autoCreatedNavIds && _afOpt_autoCreatedNavIds.length) {
+    AppState.navettesLibres = (AppState.navettesLibres || []).filter(function(n) {
+      return _afOpt_autoCreatedNavIds.indexOf(n._navetteId) < 0;
+    });
+    _afOpt_autoCreatedNavIds = [];
+  }
+  if (_afOpt_autoCreatedNavFluxIds && _afOpt_autoCreatedNavFluxIds.length) {
+    AppState.fluxNavettes = (AppState.fluxNavettes || []).filter(function(fn) {
+      return _afOpt_autoCreatedNavFluxIds.indexOf(fn._navFluxId) < 0;
+    });
+    AppState.fluxDerivesNavette = (AppState.fluxDerivesNavette || []).filter(function(fd) {
+      return _afOpt_autoCreatedNavFluxIds.indexOf(fd._navFluxId) < 0;
+    });
+    _afOpt_autoCreatedNavFluxIds = [];
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -7943,6 +7995,138 @@ function _afOpt_phase0_initStoreSlots(contextualSlots) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// PHASE 0.5 — Construction automatique des navettes (avant FFD)
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_phase05_navettes(fluxList, dm, jour) {
+  var CAP = 33;
+  var jourLower = (_jMat(jour) || '').toLowerCase();
+
+  // 1. Grouper tous les flux par entrepôt
+  var allMagByEp   = {}; // entrepot → { magasin: true }
+  var smallFluxByEp = {}; // entrepot → [ flux avec ut ≤ 1 ]
+
+  fluxList.forEach(function(f) {
+    if (f._isFluxNavettise) return; // flux dérivés déjà existants : ignorés
+    if (!allMagByEp[f.entrepot])   allMagByEp[f.entrepot]   = {};
+    if (!smallFluxByEp[f.entrepot]) smallFluxByEp[f.entrepot] = [];
+    allMagByEp[f.entrepot][f.magasin] = true;
+    if (f.ut <= 1) smallFluxByEp[f.entrepot].push(f);
+  });
+
+  // 2. Trier les entrepôts par nombre de petits flux (décroissant)
+  var epList = Object.keys(allMagByEp).sort(function(a, b) {
+    return (smallFluxByEp[b] || []).length - (smallFluxByEp[a] || []).length;
+  });
+
+  var toProcess = epList.slice();
+
+  while (toProcess.length > 1) {
+    var A = toProcess.shift();
+    var smallA = smallFluxByEp[A] || [];
+    if (!smallA.length) continue;
+
+    // 3. Trouver l'entrepôt d'accueil B (plus grand nombre de jumeaux)
+    var bestB = null, bestCount = 0;
+    toProcess.forEach(function(B) {
+      var magB  = allMagByEp[B] || {};
+      var count = smallA.filter(function(f) { return magB[f.magasin]; }).length;
+      if (count > bestCount) { bestB = B; bestCount = count; }
+    });
+
+    // Retirer B du pool (A est déjà sorti via shift)
+    if (bestB) toProcess = toProcess.filter(function(ep) { return ep !== bestB; });
+    if (!bestB || bestCount === 0) continue;
+
+    // 4. Flux jumeaux : petits flux de A dont le magasin existe dans B
+    var magB  = allMagByEp[bestB] || {};
+    var twins = smallA.filter(function(f) { return magB[f.magasin]; });
+    if (!twins.length) continue;
+
+    // 5. Grouper les jumeaux en bundles ≤33 UT par marchandises compatibles (FFD)
+    var bundles = [];
+    twins.slice().sort(function(a, b) { return b.ut - a.ut; }).forEach(function(f) {
+      var fam    = _afOpt_getFamille(f.marchandise);
+      var placed = false;
+      for (var bi = 0; bi < bundles.length; bi++) {
+        var bkt = bundles[bi];
+        if (bkt.famille !== fam) continue;
+        if (bkt.utTotal + f.ut > CAP + 0.01) continue;
+        var testFlux = bkt.flux.concat([f]);
+        if (typeof validerCompatibiliteMarchandises === 'function' &&
+            !validerCompatibiliteMarchandises(testFlux).valide) continue;
+        bkt.flux.push(f);
+        bkt.utTotal = Math.round((bkt.utTotal + f.ut) * 10) / 10;
+        placed = true;
+        break;
+      }
+      if (!placed) bundles.push({ famille: fam, utTotal: f.ut, flux: [f] });
+    });
+
+    // 6. Créer les navettes (structures identiques à confirmerNavetteFlux)
+    var distAB     = (_afOpt_getDist(dm, A, bestB) || { m: 60 }).m;
+
+    bundles.forEach(function(bkt) {
+      var idx          = ++_afOpt_navetteCount;
+      var navetteId    = 'NAV_OPT_' + idx;
+      var primaryNfId  = 'NAVFX_OPT_' + idx + '_0';
+      var primaryMarc  = bkt.flux[0].marchandise;
+      var tdBundle   = bkt.utTotal <= 9 ? 15 : bkt.utTotal <= 18 ? 30 : 45;
+      var arriveeMin = 360 + distAB + tdBundle;
+
+      // Navette physique (un seul objet pour le bundle)
+      AppState.navettesLibres.push({
+        _navetteId:   navetteId,
+        _navFluxId:   primaryNfId,
+        entrepot:     A,
+        magasin:      bestB,
+        ut:           bkt.utTotal,
+        marchandise:  primaryMarc,
+        zoneEntrepot: '',
+        isNavette:    true,
+        _autoOpt:     true
+      });
+      _afOpt_autoCreatedNavIds.push(navetteId);
+
+      // Un fluxNavettes + un fluxDerivé par flux du bundle
+      bkt.flux.forEach(function(f, fi) {
+        var nfId = 'NAVFX_OPT_' + idx + '_' + fi;
+
+        AppState.fluxNavettes.push({
+          _navFluxId:      nfId,
+          _navetteId:      navetteId,
+          magasin:         f.magasin,
+          marchandise:     f.marchandise,
+          entrepotOrigine: A,
+          entrepotRelay:   bestB,
+          utNavette:       f.ut,
+          jour:            jour,
+          _autoOpt:        true
+        });
+        _afOpt_autoCreatedNavFluxIds.push(nfId);
+
+        AppState.fluxDerivesNavette.push({
+          _navFluxId:       nfId,
+          _navetteId:       navetteId,
+          magasin:          f.magasin,
+          marchandise:      f.marchandise,
+          ut:               f.ut,
+          entrepot:         bestB,
+          entrepotOrigine:  A,
+          _isFluxNavettise: true,
+          _arriveeNavMin:   arriveeMin,
+          jour:             jour,
+          _autoOpt:         true
+        });
+      });
+
+      console.log('[afOpt] phase05: navette', navetteId, A, '→', bestB,
+        bkt.utTotal + ' UT (' + bkt.flux.map(function(f){ return f.magasin; }).join(', ') + ')');
+    });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
 // PHASE 1.1 — FFD par famille / entrepôt
 // ══════════════════════════════════════════════════════════════════
 
@@ -7965,13 +8149,17 @@ function _afOpt_phase1_ffd(fluxList) {
         if (!validerCompatibiliteMarchandises(testFlux).valide) continue;
       }
       g.flux.push({
-        magasin:      flux.magasin,
-        marchandise:  flux.marchandise,
-        ut:           flux.ut,
-        utAffecte:    flux.ut,
-        entrepot:     flux.entrepot,
-        zoneEntrepot: flux.zoneEntrepot || '',
-        embDelai:     flux.embDelai     || 0
+        magasin:          flux.magasin,
+        marchandise:      flux.marchandise,
+        ut:               flux.ut,
+        utAffecte:        flux.ut,
+        entrepot:         flux.entrepot,
+        zoneEntrepot:     flux.zoneEntrepot     || '',
+        embDelai:         flux.embDelai         || 0,
+        _isFluxNavettise: flux._isFluxNavettise || false,
+        _navFluxId:       flux._navFluxId       || null,
+        _navetteId:       flux._navetteId       || null,
+        _arriveeNavMin:   flux._arriveeNavMin   || 0
       });
       g.utTotal += flux.ut;
       placed = true;
@@ -7986,13 +8174,17 @@ function _afOpt_phase1_ffd(fluxList) {
         zone:     flux.zoneEntrepot || flux.entrepot || '',
         utTotal:  utPlace,
         flux: [{
-          magasin:      flux.magasin,
-          marchandise:  flux.marchandise,
-          ut:           flux.ut,
-          utAffecte:    utPlace,
-          entrepot:     flux.entrepot,
-          zoneEntrepot: flux.zoneEntrepot || '',
-          embDelai:     flux.embDelai     || 0
+          magasin:          flux.magasin,
+          marchandise:      flux.marchandise,
+          ut:               flux.ut,
+          utAffecte:        utPlace,
+          entrepot:         flux.entrepot,
+          zoneEntrepot:     flux.zoneEntrepot     || '',
+          embDelai:         flux.embDelai         || 0,
+          _isFluxNavettise: flux._isFluxNavettise || false,
+          _navFluxId:       flux._navFluxId       || null,
+          _navetteId:       flux._navetteId       || null,
+          _arriveeNavMin:   flux._arriveeNavMin   || 0
         }]
       });
     }
@@ -8247,7 +8439,7 @@ function _afOpt_simulerGroupe(entrepot, arrets, dm, jour) {
   return { valid: true, dureeRoute: dureeRoute, deliveryTimes: deliveryTimes, hasPause: hasPause };
 }
 
-function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDur) {
+function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDur, debutMin) {
   chgtDur = (chgtDur !== undefined && chgtDur !== null) ? +chgtDur : 60;
   admDur  = (admDur  !== undefined && admDur  !== null) ? +admDur  : 15;
   var SETUP = chgtDur + admDur;
@@ -8262,10 +8454,11 @@ function _afOpt_computeValidIntervals(entrepot, arrets, dm, jour, chgtDur, admDu
   //   - accroche après 6h du jour            → t >= 360
   //   - accroche avant 6h du lendemain       → t <  1800
   //   - toutes livraisons avant 7h30 lend.   → t + SETUP + lastFinRel <= 1890
+  //   - contrainte navette : t >= arrivée navette à l'entrepôt d'accueil
   var lastFinRel   = sim.deliveryTimes.length
     ? sim.deliveryTimes[sim.deliveryTimes.length - 1].finRel
     : 0;
-  var DEBUT_GLOBAL = 360;
+  var DEBUT_GLOBAL = Math.max(360, debutMin || 0);
   var FIN_GLOBAL   = Math.min(1800, 1890 - SETUP - lastFinRel);
   if (FIN_GLOBAL <= DEBUT_GLOBAL) return [];
 
@@ -8463,6 +8656,15 @@ function _afOpt_findBestPermutation(groupe, dm, jour) {
   var isFraisOuSurgDetail = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG');
   var chgtDurG      = isFraisOuSurgDetail ? 60 : 0;
 
+  // Contrainte navette : si le groupe contient des flux dérivés, le chargement ne peut
+  // démarrer avant l'arrivée de la navette à l'entrepôt d'accueil.
+  var debutMinGroupe = 360;
+  groupe.flux.forEach(function(f) {
+    if (f._arriveeNavMin && f._arriveeNavMin > debutMinGroupe) {
+      debutMinGroupe = f._arriveeNavMin;
+    }
+  });
+
   // Pour N > _PERM_EXACT_LIMIT : nearest-neighbour (évite l'explosion N!)
   var perms;
   if (magasinsDistincts.length > _PERM_EXACT_LIMIT) {
@@ -8478,7 +8680,7 @@ function _afOpt_findBestPermutation(groupe, dm, jour) {
   perms.forEach(function(perm) {
     var arrets    = buildArrets(perm);
     var intervals = _afOpt_computeValidIntervals(
-      groupe.entrepot, arrets, dm, jour, chgtDurG, 15
+      groupe.entrepot, arrets, dm, jour, chgtDurG, 15, debutMinGroupe
     );
     if (!intervals.length) return;
 
@@ -9365,7 +9567,26 @@ function autoFillOptimise() {
         }
       });
 
-      _afOpt_updateProgress(0.30, 'Phase 1 — Placement dans les modules…');
+      // Phase 1.6a — Placer les navettes auto en premier, chacune dans son propre module
+      _afOpt_autoCreatedNavIds.forEach(function(navetteId) {
+        var nav = (AppState.navettesLibres || []).filter(function(n) {
+          return n._navetteId === navetteId;
+        })[0];
+        if (!nav) return;
+        var tid    = _afOpt_genTid();
+        var nums   = (AppState.modules || []).map(function(m) { return parseInt(m.id.replace(/\D/g, '')) || 0; });
+        var modId  = 'M' + ((nums.length ? Math.max.apply(null, nums) : 0) + 1);
+        var marc   = nav.marchandise || '';
+        AppState.tourneesLocales.push([tid, 33, nav.entrepot, 0, 0, 'Non', marc, _opt_jour]);
+        AppState.planLocal[tid] = [Object.assign({}, nav)];
+        _afOpt_autoCreatedTids.push(tid);
+        AppState.modules.push({ id: modId, tours: [tid] });
+        _afOpt_autoCreatedModIds.push(modId);
+        AppState.modulesOffsets[modId + '_' + tid] = 360; // depart 6h
+        console.log('[afOpt] navette placee:', navetteId, nav.entrepot, '->', nav.magasin, nav.ut, 'UT', modId);
+      });
+
+      _afOpt_updateProgress(0.30, 'Phase 1 — Placement dans les modules...');
       console.log('[afOpt] Phase 1.5 — tri OK, ' + groupesTries.length + ' groupes valides');
 
       var placerChunk = function(idx) {
@@ -9523,16 +9744,23 @@ function autoFillOptimise() {
       _afOpt_phase0_initStoreSlots(contextualSlots);
       console.log('[afOpt] contextualSlots =', contextualSlots.length);
 
-      var fluxList = _afOpt_collectFlux(AppState.donnees, _opt_jour);
-      console.log('[afOpt] flux collectés =', fluxList.length, '(jour =', _opt_jour + ')');
-
-      if (!fluxList.length) {
-        _afOpt_updateProgress(1, '⚠️ Aucun flux pour le jour « ' + _opt_jour + ' ». Vérifiez le jour actif et le fichier Excel.');
+      // Collecte brute (sans navettes) + garde
+      var fluxListRaw = _afOpt_collectFlux(AppState.donnees, _opt_jour);
+      console.log('[afOpt] flux bruts =', fluxListRaw.length, '(jour =', _opt_jour + ')');
+      if (!fluxListRaw.length) {
+        _afOpt_updateProgress(1, 'Aucun flux pour ce jour. Verifiez le jour actif et le fichier Excel.');
         setTimeout(function() { _afOpt_hideOverlay(); }, 4000);
         return;
       }
 
-      _afOpt_updateProgress(0.05, 'Phase 1 — FFD groupement (' + fluxList.length + ' flux)…');
+      // Phase 0.5 — Construction automatique des navettes
+      _afOpt_updateProgress(0.03, 'Phase 0.5 - Construction des navettes...');
+      _afOpt_phase05_navettes(fluxListRaw, _opt_dm, _opt_jour);
+      console.log('[afOpt] navettes auto =', _afOpt_autoCreatedNavIds.length);
+
+      // Re-collecte avec flux derives inclus et UT navettisees soustraites
+      var fluxList = _afOpt_collectFlux(AppState.donnees, _opt_jour);
+      _afOpt_updateProgress(0.05, 'Phase 1 - FFD groupement (' + fluxList.length + ' flux)...');
 
       _opt_groupes         = _afOpt_phase1_ffd(fluxList);
       _opt_groupes         = _afOpt_phase1_fractionner(_opt_groupes, fluxList);
