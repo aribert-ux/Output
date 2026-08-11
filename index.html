@@ -84,7 +84,7 @@
     /* LAYOUT */
     #main {
       display: grid;
-      grid-template-columns: 1fr 360px;
+      grid-template-columns: 1fr 440px;
       flex: 1;
       min-height: 0;
       overflow: hidden;
@@ -597,7 +597,7 @@
       flex: 1; position: relative; min-height: 90px; overflow: visible;
     }
     #panel-remorques-bilan {
-      width: 360px; min-width: 360px; background: #FAFAFA;
+      width: 440px; min-width: 440px; background: #FAFAFA;
       border-left: 1px solid #E0E0E0; overflow-y: auto;
       display: flex; flex-direction: column;
       grid-column: 2; grid-row: 1;
@@ -3102,6 +3102,10 @@ function getZoneEntrepot(entrepot) {
 var JOURS_SEMAINE = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
 function getJourPrecedent(j) { var i=JOURS_SEMAINE.indexOf(j); return i>=0?JOURS_SEMAINE[(i+6)%7]:null; }
 function getJourSuivant(j)   { var i=JOURS_SEMAINE.indexOf(j); return i>=0?JOURS_SEMAINE[(i+1)%7]:null; }
+// Variantes limitées à la semaine de planning : Dimanche est la fin (pas de lendemain Lundi dans le plan),
+// Lundi est le début (pas de veille Dimanche dans le plan — le Dim. déborde sur un Lundi virtuel non représenté).
+function getJourSuivantPlanning(j)   { return j === 'Dimanche' ? null : getJourSuivant(j); }
+function getJourPrecedentPlanning(j) { return j === 'Lundi'    ? null : getJourPrecedent(j); }
 // Samedi et Dimanche partagent le même jour de chargement — normalisation pour comparaisons de jour
 function _jMat(j)    { return j === 'Dimanche' ? 'Samedi' : j; }
 function _isSamDim(j){ return j === 'Samedi' || j === 'Dimanche'; }
@@ -3466,14 +3470,14 @@ function setEmbDelai(tid, idx, delai) {
   if (AppState.donnees) rendreGantt(AppState.donnees);
 }
 
-// Retourne le chgtDur par défaut selon la famille de la tournée (60 pour FRAIS/SURG, 0 pour SEC)
+// Retourne le chgtDur par défaut selon la famille de la tournée (60 pour FRAIS/SURG, 30 pour SEC)
 function _chgtDurFallback(tid) {
   var flux = AppState.planLocal[tid] || [];
   var isFOS = flux.some(function(f) {
     var m = (f.marchandise || '').toUpperCase();
     return m === 'FL' || m === 'PF' || m === 'SURG';
   });
-  return isFOS ? 60 : 0;
+  return isFOS ? 60 : 30;
 }
 
 function majOverride(tid, key, val) {
@@ -4091,7 +4095,7 @@ function rendrePlanningFlux(data) {
 
     // Phase 2 : créneaux du lendemain (+24h) — livraison après 6h du lendemain, départ >= 6h courant
     if (!_chosen && jourNom) {
-      var _jourSuiv = getJourSuivant(jourNom);
+      var _jourSuiv = getJourSuivantPlanning(jourNom);
       var _cartoSuiv = _jourSuiv ? ((cartoPlag[f.magasin] || {})[_jourSuiv] || null) : null;
       if (_cartoSuiv) {
         var _catSuiv = catPourMarc(f.marchandise);
@@ -5463,8 +5467,8 @@ function memeZoneEntrepot(ent1, ent2) {
 function verifierConflitCroiseDays(modId, tid, newOff, data) {
   if (!data || !AppState.jourActif) return null;
   var jour = AppState.jourActif;
-  var jourPrev = getJourPrecedent(jour);
-  var jourNext = getJourSuivant(jour);
+  var jourPrev = getJourPrecedentPlanning(jour);
+  var jourNext = getJourSuivantPlanning(jour);
   var mod = null;
   if (AppState.moduleM0.id === modId) mod = AppState.moduleM0;
   AppState.modules.forEach(function(m) { if (m.id === modId) mod = m; });
@@ -6060,7 +6064,7 @@ function rendreGantt(data) {
   initModules(data);
 
   var jour     = AppState.jourActif;
-  var jourPrev = getJourPrecedent(jour), jourNext = getJourSuivant(jour);
+  var jourPrev = getJourPrecedentPlanning(jour), jourNext = getJourSuivantPlanning(jour);
   var hasCtx   = !!jour;
   // Chaque jour va de 6h à 6h. La veille déborde naturellement dans [0h,6h] du jour courant
   // après un décalage de -24h. Le lendemain déborde dans [30h,34h]. Pas besoin d'étendre à gauche.
@@ -7867,8 +7871,8 @@ function _afOpt_cleanupPreviousRun() {
 // ══════════════════════════════════════════════════════════════════
 
 function _afOpt_phase0_extractContextualTournees(jour, dm) {
-  var jourPrev = (typeof getJourPrecedent === 'function') ? getJourPrecedent(jour) : null;
-  var jourNext = (typeof getJourSuivant  === 'function') ? getJourSuivant(jour)  : null;
+  var jourPrev = (typeof getJourPrecedentPlanning === 'function') ? getJourPrecedentPlanning(jour) : null;
+  var jourNext = (typeof getJourSuivantPlanning  === 'function') ? getJourSuivantPlanning(jour)  : null;
   var result   = [];
 
   // Construit dmGantt une seule fois (séparateur '_' pour calculerPlanningGantt)
@@ -8772,7 +8776,7 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
   var finMin    = actualFinMin;
   var tid       = _afOpt_genTid();
   var marc      = (groupe.flux[0] && groupe.flux[0].marchandise) || 'PGC';
-  var chgtSaved = isFraisOuSurgDetail ? 60 : 0;
+  var chgtSaved = isFraisOuSurgDetail ? 60 : 30;
 
   if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
   AppState.tourneesLocales.push([tid, 33, groupe.entrepot, 15, chgtSaved, 'Non', marc, jour]);
@@ -9186,27 +9190,61 @@ function _afOpt_resolveNavettes(unplanned, finalStates, dm, jour) {
       };
 
       var best = _afOpt_findBestPermutation(fakeGroupe, dm, jour);
+      if (best && best.duree > _DUREE_MAX_TOURNEE) best = null;
 
-      // Si le groupe de repli échoue (fenêtres incompatibles, cartographie partielle…),
-      // tenter chaque flux individuellement comme tournée solo.
+      // Si le groupe de repli échoue, sous-groupement greedy avant repli solo :
+      // on tente d'agréger les flux restants un par un autour d'un seed valide,
+      // plutôt que de tomber directement en tournée solo pour chaque flux.
+      // Le filtre de durée maximale (_DUREE_MAX_TOURNEE) s'applique à chaque étape.
       var fluxATraiter = best ? [{ groupe: fakeGroupe, best: best }] : [];
       if (!best) {
-        b.flux.forEach(function(f) {
-          var soloGroupe = {
+        var remaining = b.flux.slice();
+        while (remaining.length > 0) {
+          var seed    = remaining.splice(0, 1)[0];
+          var curFlux = [seed];
+          var curUT   = seed.utAffecte || seed.ut;
+          var curGroupe = {
             famille:  grp.famille,
             entrepot: grp.entrepot,
             zone:     grp.entrepot,
-            utTotal:  f.utAffecte || f.ut,
-            flux:     [f]
+            utTotal:  curUT,
+            flux:     curFlux
           };
-          var soloBest = _afOpt_findBestPermutation(soloGroupe, dm, jour);
-          if (!soloBest) {
+          var curBest = _afOpt_findBestPermutation(curGroupe, dm, jour);
+          if (curBest && curBest.duree > _DUREE_MAX_TOURNEE) curBest = null;
+          if (!curBest) {
             console.warn('[afOpt] resolveNavettes: flux solo non planifiable —',
-              f.magasin, '/', grp.famille, '/', grp.entrepot);
-            return;
+              seed.magasin, '/', grp.famille, '/', grp.entrepot);
+            continue;
           }
-          fluxATraiter.push({ groupe: soloGroupe, best: soloBest });
-        });
+          var ri = 0;
+          while (ri < remaining.length) {
+            var cand   = remaining[ri];
+            var candUT = cand.utAffecte || cand.ut;
+            if (curUT + candUT <= CAP + 0.01) {
+              var testFlux   = curFlux.concat([cand]);
+              var testGroupe = {
+                famille:  grp.famille,
+                entrepot: grp.entrepot,
+                zone:     grp.entrepot,
+                utTotal:  curUT + candUT,
+                flux:     testFlux
+              };
+              var testBest = _afOpt_findBestPermutation(testGroupe, dm, jour);
+              if (testBest && testBest.duree > _DUREE_MAX_TOURNEE) testBest = null;
+              if (testBest) {
+                curFlux    = testFlux;
+                curUT     += candUT;
+                curGroupe  = testGroupe;
+                curBest    = testBest;
+                remaining.splice(ri, 1);
+                continue;
+              }
+            }
+            ri++;
+          }
+          fluxATraiter.push({ groupe: curGroupe, best: curBest });
+        }
       }
 
       fluxATraiter.forEach(function(item) {
@@ -10625,7 +10663,7 @@ function rendreGanttRemorques(data) {
 
   var PPM = AppState.PPM;
   var jourRem = AppState.jourActif;
-  var jourNextRem = getJourSuivant(jourRem);
+  var jourNextRem = getJourSuivantPlanning(jourRem);
   var debutH = 6, finH = 33;
   var largeur = (finH - debutH) * 60 * PPM;
   var LABEL_W = 200;
@@ -11041,7 +11079,8 @@ function rendreGanttRemorques(data) {
         for (var _fi = 0; _fi < td.flux.length; _fi++) {
           if (!td.flux[_fi].isNavette && td.flux[_fi].magasin) { _firstMag = td.flux[_fi].magasin; break; }
         }
-        _bepGet(ep).events.push({ type: 'chgt', tid: tid, debut: td.barLeft, fin: td.barLeft + td.chgtDur, duree: td.chgtDur, premierMagasin: _firstMag });
+        var _utTour = Math.round(td.flux.reduce(function(s,f){ return s+(parseFloat(f.utAffecte!==undefined?f.utAffecte:f.ut)||0); },0)*10)/10;
+        _bepGet(ep).events.push({ type: 'chgt', tid: tid, debut: td.barLeft, fin: td.barLeft + td.chgtDur, duree: td.chgtDur, premierMagasin: _firstMag, ut: _utTour });
       }
 
       // Événement déchargement navette (marchandise seulement, ut > 0)
@@ -11063,8 +11102,50 @@ function rendreGanttRemorques(data) {
     if (epList.length === 0) {
       panelBilan.innerHTML = '<div style="color:#90A4AE;font-size:12px;padding:16px;text-align:center">Aucun module planifié.</div>';
     } else {
+      var CHGT_CHART_W = 80;  // largeur colonne graphe (px)
+      var ROW_H        = 36;  // hauteur fixe de chaque ligne d'événement (px) — identique carte ET barre SVG
+
+      // Dégradé 4 couleurs : vert (≤33) → jaune (66) → orange (99) → rouge (≥132)
+      function _utColor(ut) {
+        var stops = [
+          {ut:  33, r:  76, g: 175, b:  80},  // vert   #4CAF50
+          {ut:  66, r: 255, g: 235, b:  59},  // jaune  #FFEB3B
+          {ut:  99, r: 255, g: 152, b:   0},  // orange #FF9800
+          {ut: 132, r: 244, g:  67, b:  54}   // rouge  #F44336
+        ];
+        if (ut <= stops[0].ut) return '#4CAF50';
+        if (ut >= stops[stops.length - 1].ut) return '#F44336';
+        for (var i = 0; i < stops.length - 1; i++) {
+          var a = stops[i], b = stops[i + 1];
+          if (ut <= b.ut) {
+            var t = (ut - a.ut) / (b.ut - a.ut);
+            return 'rgb(' + Math.round(a.r + t*(b.r-a.r)) + ',' + Math.round(a.g + t*(b.g-a.g)) + ',' + Math.round(a.b + t*(b.b-a.b)) + ')';
+          }
+        }
+        return '#F44336';
+      }
+
+      // Pré-calcul des groupes par entrepôt + max UT global (somme des chgt simultanés par groupe)
+      var _allGroups = {}, _globalMaxUT = 33;
       epList.forEach(function(ep) {
-        var epData = bilanEntrepots[ep];
+        var evts = bilanEntrepots[ep].events.slice().sort(function(a, b) { return a.debut - b.debut; });
+        var grps = [], cGrp = null, cEnd = -Infinity;
+        evts.forEach(function(ev) {
+          if (!cGrp || ev.debut >= cEnd) { cGrp = [ev]; grps.push(cGrp); cEnd = ev.fin; }
+          else { cGrp.push(ev); cEnd = Math.max(cEnd, ev.fin); }
+        });
+        _allGroups[ep] = { evts: evts, groups: grps };
+        grps.forEach(function(grp) {
+          var gUT = grp.reduce(function(s, ev) { return s + (ev.type === 'chgt' ? (ev.ut || 0) : 0); }, 0);
+          if (gUT > _globalMaxUT) _globalMaxUT = gUT;
+        });
+      });
+
+      epList.forEach(function(ep) {
+        var epData  = bilanEntrepots[ep];
+        var epPre   = _allGroups[ep];
+        var evts    = epPre.evts;
+        var groups  = epPre.groups;
         var section = document.createElement('div');
         section.style.cssText = 'border-bottom:2px solid #ECEFF1';
 
@@ -11073,42 +11154,38 @@ function rendreGanttRemorques(data) {
         epTitle.textContent = ep;
         section.appendChild(epTitle);
 
-        // Trier événements chronologiquement
-        var evts = epData.events.slice().sort(function(a, b) { return a.debut - b.debut; });
+        // Ligne contenu : événements (gauche, flex:1) + graphe SVG (droite, largeur fixe)
+        var contentRow = document.createElement('div');
+        contentRow.style.cssText = 'display:flex;align-items:flex-start';
+
+        var leftCol = document.createElement('div');
+        leftCol.style.cssText = 'flex:1;min-width:0;overflow:hidden';
 
         if (evts.length === 0) {
           var emptyDiv = document.createElement('div');
           emptyDiv.style.cssText = 'font-size:10px;color:#B0BEC5;padding:3px 12px';
           emptyDiv.textContent = 'Pas de chargement';
-          section.appendChild(emptyDiv);
+          leftCol.appendChild(emptyDiv);
         } else {
-          // Regrouper les événements qui se chevauchent (côte à côte)
-          var groups = [], curGrp = null, curEnd = -Infinity;
-          evts.forEach(function(ev) {
-            if (!curGrp || ev.debut >= curEnd) {
-              curGrp = [ev]; groups.push(curGrp); curEnd = ev.fin;
-            } else {
-              curGrp.push(ev); curEnd = Math.max(curEnd, ev.fin);
-            }
-          });
           groups.forEach(function(grp) {
             var grpRow = document.createElement('div');
-            grpRow.style.cssText = 'display:flex;gap:4px;padding:4px 8px';
+            // Hauteur fixe ROW_H pour l'alignement avec les barres SVG
+            grpRow.style.cssText = 'display:flex;gap:4px;padding:4px 8px;height:' + ROW_H + 'px;box-sizing:border-box;align-items:center';
             grp.forEach(function(ev) {
               var isNav = ev.type === 'nav_dech';
               var card = document.createElement('div');
-              card.style.cssText = 'flex:1;min-width:0;border-radius:4px;padding:3px 5px;border:1px solid ' +
+              card.style.cssText = 'flex:1;min-width:0;border-radius:4px;padding:2px 5px;border:1px solid ' +
                 (isNav ? '#80CBC4;background:#E0F2F1' : '#90CAF9;background:#E3F2FD');
               var hdr = document.createElement('div');
               hdr.style.cssText = 'font-size:10px;font-weight:700;color:' + (isNav ? '#00695C' : '#1565C0') + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
               hdr.textContent = (isNav ? 'Nav. ' : 'Chgt ') + ev.tid + (ev.premierMagasin ? ' · ' + ev.premierMagasin : '');
               var sub = document.createElement('div');
-              sub.style.cssText = 'font-size:9px;color:#546E7A';
+              sub.style.cssText = 'font-size:9px;color:#546E7A;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
               sub.textContent = minutesVersHeure(ev.debut) + ' - ' + minutesVersHeure(ev.fin) + ' (' + ev.duree + 'min)';
               card.appendChild(hdr); card.appendChild(sub);
               grpRow.appendChild(card);
             });
-            section.appendChild(grpRow);
+            leftCol.appendChild(grpRow);
           });
         }
 
@@ -11123,8 +11200,79 @@ function rendreGanttRemorques(data) {
         varVal.className = 'rb-delta ' + (v > 0 ? 'pos' : (v < 0 ? 'neg' : 'zero'));
         varVal.textContent = (v > 0 ? '+' : '') + v;
         varRow.appendChild(varLbl); varRow.appendChild(varVal);
-        section.appendChild(varRow);
+        leftCol.appendChild(varRow);
 
+        contentRow.appendChild(leftCol);
+
+        // ── Graphe SVG : une barre par grpRow, hauteur = ROW_H, largeur ∝ UT ──
+        var chartCol = document.createElement('div');
+        chartCol.style.cssText = 'width:' + CHGT_CHART_W + 'px;flex-shrink:0;padding:0;box-sizing:border-box';
+
+        if (groups.length > 0 && evts.length > 0) {
+          var NS      = 'http://www.w3.org/2000/svg';
+          var svgH    = groups.length * ROW_H;
+          var barArea = CHGT_CHART_W - 4;
+          var xScale  = barArea / Math.max(_globalMaxUT, 1);
+
+          // Ligne de référence 33 UT
+          var refX = Math.min(Math.round(33 * xScale), barArea);
+
+          var svg = document.createElementNS(NS, 'svg');
+          svg.setAttribute('width', CHGT_CHART_W);
+          svg.setAttribute('height', svgH);
+          svg.style.cssText = 'display:block';
+
+          // Fond et ligne 33 UT (s'étend sur toute la hauteur)
+          var bg = document.createElementNS(NS, 'rect');
+          bg.setAttribute('x', 0); bg.setAttribute('y', 0);
+          bg.setAttribute('width', CHGT_CHART_W); bg.setAttribute('height', svgH);
+          bg.setAttribute('fill', '#F0F4F8');
+          svg.appendChild(bg);
+
+          if (refX > 0) {
+            var refLine = document.createElementNS(NS, 'line');
+            refLine.setAttribute('x1', refX); refLine.setAttribute('y1', 0);
+            refLine.setAttribute('x2', refX); refLine.setAttribute('y2', svgH);
+            refLine.setAttribute('stroke', '#90A4AE');
+            refLine.setAttribute('stroke-width', '0.75');
+            refLine.setAttribute('stroke-dasharray', '2,2');
+            svg.appendChild(refLine);
+          }
+
+          // Une barre par groupe, alignée sur ROW_H
+          groups.forEach(function(grp, gi) {
+            var groupUT = grp.reduce(function(s, ev) { return s + (ev.type === 'chgt' ? (ev.ut || 0) : 0); }, 0);
+            if (groupUT <= 0) return;
+            var y    = gi * ROW_H + 1;
+            var barH = ROW_H - 2;
+            var barW = Math.max(2, Math.round(groupUT * xScale));
+            var color = _utColor(groupUT);
+
+            var rect = document.createElementNS(NS, 'rect');
+            rect.setAttribute('x', 0);
+            rect.setAttribute('y', y);
+            rect.setAttribute('width', barW);
+            rect.setAttribute('height', barH);
+            rect.setAttribute('fill', color);
+            rect.setAttribute('rx', 2);
+            svg.appendChild(rect);
+
+            // Étiquette UT centrée dans la barre
+            var lbl = document.createElementNS(NS, 'text');
+            lbl.setAttribute('x', Math.min(barW + 2, barArea));
+            lbl.setAttribute('y', y + Math.floor(barH / 2) + 3);
+            lbl.setAttribute('font-size', '8');
+            lbl.setAttribute('font-family', 'sans-serif');
+            lbl.setAttribute('fill', '#37474F');
+            lbl.textContent = (Math.round(groupUT * 10) / 10) + 'UT';
+            svg.appendChild(lbl);
+          });
+
+          chartCol.appendChild(svg);
+        }
+
+        contentRow.appendChild(chartCol);
+        section.appendChild(contentRow);
         panelBilan.appendChild(section);
       });
     }
@@ -11312,7 +11460,7 @@ function rendreGanttMagasins(data) {
 
   var PPM = AppState.PPM;
   var jour     = AppState.jourActif;
-  var jourPrev = getJourPrecedent(jour), jourNext = getJourSuivant(jour);
+  var jourPrev = getJourPrecedentPlanning(jour), jourNext = getJourSuivantPlanning(jour);
   var hasCtx   = !!jour;
   // Pivot : dimanche = sam.22h→dim.22h ; autres jours = 07:30→07:30
   var isSunday  = (jour === 'Dimanche');
