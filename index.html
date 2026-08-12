@@ -2245,7 +2245,11 @@ function validerTournee(params) {
 // Retourne une liste de blocs {type, debut (min), duree (min), label, color, arret?, idx?}
 // debutMin = minutes absolues depuis minuit (0-1800 pour le Gantt 0h-30h)
 // _initDrive/_initService : état conducteur hérité de la tournée précédente (chaînage cross-tournée)
-function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retourLieu, hookDur, lieuDepart, _initDrive, _initService, manualBreaks, _initPauseServiceFaite, _initBonusConduiteUsed, _chauffeurSplits, parallelConvertMap, skipDeccrochage, chgtDur) {
+function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retourLieu, hookDur, lieuDepart, _initDrive, _initService, manualBreaks, _initPauseServiceFaite, _initBonusConduiteUsed, _chauffeurSplits, parallelConvertMap, skipDeccrochage, chgtDur, fusionPairs) {
+  function _isFusionPairLocal(a, b) {
+    if (!fusionPairs || !fusionPairs.length) return false;
+    return fusionPairs.some(function(p) { return (p[0] === a && p[1] === b) || (p[0] === b && p[1] === a); });
+  }
   var LIMITE_C = 270; // 4h30 de conduite continue
   var LIMITE_S = 360; // 6h00 de service continu
   retourLieu = retourLieu || 'ENTREPOT';
@@ -2409,7 +2413,7 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
     var _mGrp = [_mIdx], _mNext = _mIdx + 1;
     while (_mNext < arretsInput.length && !arretsInput[_mNext].isNavette) {
       var _mNL = arretsInput[_mNext].lieu || arretsInput[_mNext].magasin || '';
-      if (_mNL === _mLieu) { _mGrp.push(_mNext); _mNext++; } else break;
+      if (_mNL === _mLieu || _isFusionPairLocal(_mLieu, _mNL)) { _mGrp.push(_mNext); _mNext++; } else break;
     }
     if (_mGrp.length > 1) {
       var _mTot = 0, _mParts = [];
@@ -2420,8 +2424,11 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
       });
       _mTot = Math.round(_mTot * 10) / 10;
       var _mMaxEmb = _mGrp.reduce(function(s, oi) { return Math.max(s, +(arretsInput[oi].embDelai || 0)); }, 0);
+      var _allMags = _mGrp.map(function(oi) { return arretsInput[oi].magasin || arretsInput[oi].lieu || ''; });
+      var _uniqMags = _allMags.filter(function(m, i, arr) { return m && arr.indexOf(m) === i; });
       _mergedInput.push(Object.assign({}, _mCurr, {
-        ut: _mTot, utAffecte: _mTot, embDelai: _mMaxEmb, _mergedParts: _mParts
+        ut: _mTot, utAffecte: _mTot, embDelai: _mMaxEmb, _mergedParts: _mParts,
+        _fusionMagasins: _uniqMags.length > 1 ? _uniqMags : undefined
       }));
       _origIdxGroups.push(_mGrp);
     } else {
@@ -3163,6 +3170,34 @@ function selectionnerModule(modId) {
   });
   afficherPanelTournees(modId);
 }
+
+// ── Fusion magasins co-localisés ─────────────────────────────────────────────
+function buildDistMapGlobal() {
+  var dm = {};
+  lireDistancierWb().forEach(function(d) { dm[d.f + '_' + d.t] = { km: d.km, m: d.m }; });
+  return dm;
+}
+function getDistEntryGlobal(a, b, dm) {
+  return dm[a + '_' + b]
+      || dm[(a||'').toLowerCase() + '_' + (b||'').toLowerCase()]
+      || dm[b + '_' + a]
+      || dm[(b||'').toLowerCase() + '_' + (a||'').toLowerCase()]
+      || null;
+}
+function fusionPairKey(a, b) { return [a, b].sort().join('|||'); }
+function toggleFusionMag(tid, magA, magB) {
+  if (!AppState.tourneeOverrides) AppState.tourneeOverrides = {};
+  if (!AppState.tourneeOverrides[tid]) AppState.tourneeOverrides[tid] = {};
+  var pairs = (AppState.tourneeOverrides[tid].fusionMag || []).slice();
+  var key = fusionPairKey(magA, magB);
+  var idx = -1;
+  pairs.forEach(function(p, i) { if (fusionPairKey(p[0], p[1]) === key) idx = i; });
+  if (idx >= 0) { pairs.splice(idx, 1); } else { pairs.push([magA, magB]); }
+  AppState.tourneeOverrides[tid].fusionMag = pairs.length ? pairs : undefined;
+  if (AppState.donnees) { rendreGantt(AppState.donnees); detecterConflitsGantt(); }
+  afficherPanelTournees(_moduleSelectionne);
+}
+
 function afficherPanelTournees(modId) {
   var panel = document.getElementById('panel-tournees-contenu');
   if (!panel) return;
@@ -3173,6 +3208,8 @@ function afficherPanelTournees(modId) {
     return;
   }
   panel.innerHTML = '';
+
+  var _dmPanel = buildDistMapGlobal();
 
   // Collecter les entrepôts connus pour le dropdown retour
   var entrepots = [];
@@ -3331,6 +3368,48 @@ function afficherPanelTournees(modId) {
         card.appendChild(dechRow);
       }
     }
+
+    // ── Fusion magasins co-localisés (0 min de route entre deux arrêts consécutifs) ──
+    var _fusionablePairs = [];
+    for (var _fi = 0; _fi < flux.length - 1; _fi++) {
+      if (flux[_fi].isNavette || flux[_fi + 1].isNavette) continue;
+      var _magA = flux[_fi].magasin || flux[_fi].lieu || '';
+      var _magB = flux[_fi + 1].magasin || flux[_fi + 1].lieu || '';
+      if (!_magA || !_magB || _magA === _magB) continue;
+      var _de = getDistEntryGlobal(_magA, _magB, _dmPanel);
+      if (_de && _de.m === 0) {
+        var _pkey = fusionPairKey(_magA, _magB);
+        if (!_fusionablePairs.some(function(p) { return fusionPairKey(p[0], p[1]) === _pkey; }))
+          _fusionablePairs.push([_magA, _magB]);
+      }
+    }
+    _fusionablePairs.forEach(function(pair) {
+      var _pA = pair[0], _pB = pair[1];
+      var _pKey = fusionPairKey(_pA, _pB);
+      var _active = (ov.fusionMag || []).some(function(p) { return fusionPairKey(p[0], p[1]) === _pKey; });
+      var fusRow = document.createElement('div');
+      fusRow.style.cssText = 'display:flex;align-items:center;gap:4px;margin-bottom:5px;font-size:10px;color:#546E7A';
+      var fusLbl = document.createElement('span');
+      fusLbl.textContent = '🔀 Quai commun :';
+      fusRow.appendChild(fusLbl);
+      var fusNames = document.createElement('span');
+      fusNames.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;color:#78909C;font-style:italic';
+      fusNames.textContent = _pA + ' ↔ ' + _pB;
+      fusNames.title = _pA + ' ↔ ' + _pB;
+      fusRow.appendChild(fusNames);
+      [false, true].forEach(function(active) {
+        var chip = document.createElement('button');
+        var isSelected = active ? _active : !_active;
+        chip.style.cssText = 'padding:0 4px;font-size:8px;font-weight:700;border-radius:3px;cursor:pointer;border:1px solid;height:15px;flex-shrink:0;' +
+          (isSelected ? (active ? 'background:#4527A0;color:#fff;border-color:#4527A0' : 'background:#F5F5F5;color:#90A4AE;border-color:#E0E0E0')
+                      : 'background:#F5F5F5;color:#90A4AE;border-color:#E0E0E0');
+        chip.textContent = active ? 'Fusionné' : 'Séparé';
+        chip.title = active ? 'Traiter comme un seul quai (cumul UT + union horaires)' : 'Conserver deux arrêts distincts';
+        (function(tId, a, b) { chip.addEventListener('click', function() { toggleFusionMag(tId, a, b); }); })(tid, _pA, _pB);
+        fusRow.appendChild(chip);
+      });
+      card.appendChild(fusRow);
+    });
 
     // ── Barre de composition (même code couleur que le Gantt) ──────────
     var capOuter = document.createElement('div');
@@ -6383,7 +6462,7 @@ function rendreGantt(data) {
       }
       var _chauffeurSplitsForTid = ((AppState.chauffeurSplits || {})[mod.id + '_' + tid] || []).slice();
       var _convertMapForTid = ((AppState.parallelBreakConvert || {})[mod.id + '_' + tid]) || {};
-      var blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, manualBreaksForTid, driverPSF, driverBCU, _chauffeurSplitsForTid, _convertMapForTid, !!ov.sansDecroche, hasFraisTournee ? chgtDur : 0);
+      var blocs = calculerPlanningGantt(tractorRouteStart, fluxPlanifies, distMapGantt, reglesDechGantt, retour, admDur, entrepotDepart, driverDrive, driverService, manualBreaksForTid, driverPSF, driverBCU, _chauffeurSplitsForTid, _convertMapForTid, !!ov.sansDecroche, hasFraisTournee ? chgtDur : 0, ov.fusionMag || null);
       // Nettoyer les overrides non injectés (ex : position tombée dans un bloc livraison)
       if (blocs._injectedMBAt && allPauseOvs.length > 0) {
         var _inj = blocs._injectedMBAt;
@@ -6613,6 +6692,7 @@ function rendreGantt(data) {
           segEl.style.background = getCouleurZoneVariante(zoneDepart, bloc.idx);
           segEl.style.pointerEvents = 'auto';
           segEl.dataset.mag      = nomMag;
+          if (arret && arret._fusionMagasins) segEl.dataset.fusionMags = arret._fusionMagasins.join('|||');
           segEl.dataset.debutMin = bloc.debut;
           segEl.dataset.durMin   = bloc.duree;
           var _marc = '';
@@ -7172,15 +7252,42 @@ function detecterConflitsGantt() {
   });
 
   // ── 2. Hors horaires : livraison sans intersection avec les plages d'ouverture ──
+  // Construire la carte des partenaires de fusion (union d'horaires) depuis les overrides
+  var _fusionPartnerMap = {};
+  Object.keys(AppState.tourneeOverrides || {}).forEach(function(tid) {
+    var _fov = AppState.tourneeOverrides[tid] || {};
+    (_fov.fusionMag || []).forEach(function(pair) {
+      if (!_fusionPartnerMap[pair[0]]) _fusionPartnerMap[pair[0]] = [];
+      if (_fusionPartnerMap[pair[0]].indexOf(pair[1]) < 0) _fusionPartnerMap[pair[0]].push(pair[1]);
+      if (!_fusionPartnerMap[pair[1]]) _fusionPartnerMap[pair[1]] = [];
+      if (_fusionPartnerMap[pair[1]].indexOf(pair[0]) < 0) _fusionPartnerMap[pair[1]].push(pair[0]);
+    });
+  });
+
   var cartoPlag = AppState.cartographiePlages || {};
   var jourActif = AppState.jourActif;
   segs.forEach(function(s) {
-    var jourData = (cartoPlag[s.mag] || {})[_jMat(jourActif)] || null;
-    if (!jourData) return; // cartographie absente pour ce magasin — on ne signale rien
+    // Collecter tous les magasins à consulter : le magasin principal + ses partenaires de fusion
+    var _mags = [s.mag];
+    (_fusionPartnerMap[s.mag] || []).forEach(function(m) { if (_mags.indexOf(m) < 0) _mags.push(m); });
+    // Aussi lire data-fusion-mags (magasins fusionnés dans le segment lui-même)
+    if (s.el.dataset.fusionMags) {
+      s.el.dataset.fusionMags.split('|||').forEach(function(m) { if (m && _mags.indexOf(m) < 0) _mags.push(m); });
+    }
     var cat = s.marc === 'SURG' ? 'surg' : (s.marc === 'FL' || s.marc === 'PF') ? 'frais' : 'sec';
-    var slots = (jourData[cat] || []).slice();
-    if (!slots.length) slots = (jourData.sec || []).concat(jourData.frais || [], jourData.surg || []);
-    if (!slots.length) return; // aucune plage définie — on ne signale rien
+    // Agréger les plages de tous les magasins (union)
+    var slots = [];
+    var hasCarto = false;
+    _mags.forEach(function(mag) {
+      var jourData = (cartoPlag[mag] || {})[_jMat(jourActif)] || null;
+      if (!jourData) return;
+      hasCarto = true;
+      var magSlots = (jourData[cat] || []).slice();
+      if (!magSlots.length) magSlots = (jourData.sec || []).concat(jourData.frais || [], jourData.surg || []);
+      magSlots.forEach(function(sl) { slots.push(sl); });
+    });
+    if (!hasCarto) return; // aucune cartographie disponible — on ne signale rien
+    if (!slots.length) return; // plages définies mais vides pour ce type
     var intersecte = false;
     for (var k = 0; k < slots.length && !intersecte; k++) {
       var sl = slots[k];
@@ -7293,7 +7400,7 @@ function _validerContrainteNavettes() {
     var deriveTid = null;
     Object.keys(AppState.planLocal).forEach(function(tid) {
       var plan = AppState.planLocal[tid] || [];
-      if (plan.some(function(pf) { return pf._navetteId === pair._navetteId; }))                       navTid    = tid;
+      if (plan.some(function(pf) { return pf._navetteId === pair._navetteId && pf.isNavette; }))                       navTid    = tid;
       if (plan.some(function(pf) { return pf._navFluxId === pair._navFluxId && pf._isFluxNavettise; })) deriveTid = tid;
     });
     if (!navTid || !deriveTid) return;
@@ -8888,6 +8995,9 @@ function _afOpt_placerGroupe(groupe, best, dm, jour) {
       var T_prev = gi > 0               ? mod.tours[gi - 1] : null;
       var T_next = gi < mod.tours.length ? mod.tours[gi]    : null;
 
+      // Contrainte navette : le slot immediatement apres une navette ne peut accueillir
+      // quune tournee partant de lentrepot relay (destination de la navette).
+      if (T_prev && T_prev._isNavetteEntry && groupe.entrepot !== T_prev._navetteDest) continue;
       // ── Contrainte T_prev : fin effective après modification de l'entrepôt de retour ──
       // fin_T_prev_modifiée = (finMin - _retourDuree) + dist(dernier_magasin_prev, E_new)
       var minStart = 0;
@@ -9284,15 +9394,15 @@ function _afOpt_corrigerChevauchements() {
       var lieuDepart = (prevEffRet && !memeZoneEntrepot(prevEffRet, te.entrepot))
                        ? prevEffRet : te.entrepot;
 
-      // Début de l'accrochage : avant l'admin pour FRAIS (= chargement + admin)
-      var accrocheStart = te.offsetMin + (isFrais ? chgtDur : 0);
+      // Début du chargement / accrochage : le conducteur est requis dès le début du chargement pour tous les types.
+      var accrocheStart = te.offsetMin;
 
       // 1. Pousser la tournée si elle démarre avant la fin rendue de la précédente
       if (prevEnd >= 0 && accrocheStart < prevEnd) {
         var shift = Math.ceil(prevEnd - accrocheStart);
         te.offsetMin += shift;
         AppState.modulesOffsets[mod.modId + '_' + te.tid] = te.offsetMin;
-        accrocheStart = te.offsetMin + (isFrais ? chgtDur : 0);
+        accrocheStart = te.offsetMin;
       }
 
       // 2. Temps de blanc inter-tournée → service conducteur (sauf après coupure de shift)
@@ -9583,6 +9693,7 @@ function autoFillOptimise() {
         AppState.modules.push({ id: modId, tours: [tid] });
         _afOpt_autoCreatedModIds.push(modId);
         AppState.modulesOffsets[modId + '_' + tid] = 360; // depart 6h
+        var _navDistAB  = (_afOpt_getDist(_opt_dm, nav.entrepot, nav.magasin) || { m: 60 }).m;        var _navDistBA  = (_afOpt_getDist(_opt_dm, nav.magasin, nav.entrepot) || { m: 60 }).m;        var _navTd      = nav.ut <= 9 ? 15 : nav.ut <= 18 ? 30 : 45;        var _navFinMin  = 360 + _navDistAB + _navTd + _navDistBA;        _afOpt_modulesInternes.push({          modId: modId,          tours: [{            tid:           tid,            offsetMin:     360,            finMin:        _navFinMin,            entrepot:      nav.entrepot,            retour:        nav.entrepot,            arrets:        [{ magasin: nav.magasin }],            deliveryTimes: {},            hasPause:      false,            _retourDuree:  _navDistBA,            _setup:        15,            _isNavetteEntry: true,            _navetteDest:    nav.magasin          }]        });
         console.log('[afOpt] navette placee:', navetteId, nav.entrepot, '->', nav.magasin, nav.ut, 'UT', modId);
       });
 
@@ -10467,7 +10578,7 @@ var _LS_KEY = 'auchan_transport_autosave';
 
 function _buildSessionObject() {
   return {
-    version:          '2.6',
+    version:          '2.7',
     exportedAt:       new Date().toISOString(),
     jourActif:        AppState.jourActif,
     vueActive:        AppState.vueActive,
@@ -10623,7 +10734,7 @@ function exporterCSV() {
       var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3])||15 : 15);
       var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2]||'ENTREPOT').toString() : 'ENTREPOT');
       var rem = AppState.tourneeRemorque[tid] || '';
-      var blocs = calculerPlanningGantt(offset+chgtDur+admDur, flux, distMap, reglesDech, retour, admDur);
+      var blocs = calculerPlanningGantt(offset+chgtDur+admDur, flux, distMap, reglesDech, retour, admDur, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, ov.fusionMag || null);
       blocs.filter(function(b){return b.type==='livraison'&&b.arret;}).forEach(function(b) {
         var a = b.arret;
         var ut = a.utAffecte !== undefined ? a.utAffecte : a.ut;
