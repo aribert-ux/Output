@@ -1165,6 +1165,9 @@
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <!-- ExcelJS — export Excel avec mise en forme (couleurs, bordures) -->
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+  <!-- html2canvas + jsPDF — export PDF paysage du planning graphique -->
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 </head>
 <body>
 
@@ -1195,6 +1198,7 @@
     <button class="btn btn-secondary" onclick="importerSession()" title="Charger une session précédente (.json)">📥 Importer</button>
     <button class="btn btn-success"   onclick="sauvegarderPlanUI()">💾 Enregistrer JSON</button>
     <button class="btn btn-secondary" onclick="exporterXLSX()" title="Exporter le planning en Excel (.xlsx)">📊 Excel</button>
+    <button class="btn btn-secondary" onclick="exporterPDF()" title="Exporter le planning graphique en PDF paysage (.pdf)">🖨️ PDF</button>
     <button class="btn btn-primary"   onclick="ouvrirValidation()">🔍 Valider</button>
   </div>
 </div>
@@ -10954,6 +10958,408 @@ function exporterXLSX() {
     console.error('Export XLSX :', err);
     afficherToast('❌ Erreur export Excel','erreur');
   });
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// EXPORT PDF — planning graphique paysage A3
+// ══════════════════════════════════════════════════════════════════════════
+
+async function exporterPDF() {
+  if (typeof html2canvas === 'undefined') {
+    afficherToast('❌ html2canvas non disponible', 'erreur'); return;
+  }
+  if (typeof window.jspdf === 'undefined') {
+    afficherToast('❌ jsPDF non disponible', 'erreur'); return;
+  }
+
+  afficherToast('⏳ Génération du PDF…');
+  await new Promise(function(r) { setTimeout(r, 60); }); // laisse le toast s'afficher
+
+  try {
+    var jsPDF = window.jspdf.jsPDF;
+    var pW = 420, pH = 297, mg = 10; // A3 paysage, mm
+    var doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+    // Largeur de référence = largeur du zone-gantt (= gantt-modules en plein écran)
+    var zg = document.getElementById('zone-gantt');
+    var targetW = zg ? zg.offsetWidth : (window.innerWidth - 470);
+
+    // ── Page 1 : En-tête + Légende + Gantt Modules ─────────────────────
+    var y = mg;
+    y = _pdfEnTete(doc, pW, mg, y);
+    y = _pdfLegende(doc, mg, y, pW - 2 * mg);
+
+    var _m0Hidden = _pdfMasquerM0();
+    var imgMod = await _pdfCaptureEl('gantt-modules');
+    _pdfRestaurerM0(_m0Hidden);
+    if (imgMod) {
+      if (y + 20 > pH - mg) { doc.addPage(); y = mg; }
+      _pdfBandeau(doc, mg, y, pW - 2 * mg, 'Gantt — Modules');
+      y += 8;
+      _pdfAddImageMultiPage(doc, imgMod, mg, y, pW - 2 * mg, mg);
+    }
+
+    // ── Page 2 : Bilan Remorques + Gantt Remorques physiques ────────────
+    doc.addPage(); y = mg;
+
+    // Bilan : clone hors-DOM élargi en layout horizontal
+    var imgBilan = await _pdfCaptureClone('panel-remorques-bilan', targetW, {
+      bilanLayout: true,
+      renderFn: function() { if (AppState && AppState.donnees) rendreGanttRemorques(AppState.donnees); }
+    });
+    if (imgBilan) {
+      _pdfBandeau(doc, mg, y, pW - 2 * mg, 'Bilan Remorques');
+      y += 8;
+      y = _pdfImage(doc, imgBilan, mg, y, pW - 2 * mg, Math.min((pH - mg * 2) * 0.48, pH - y - mg));
+      y += 3;
+    }
+
+    // Gantt remorques : clone hors-DOM pour dimensions libres
+    var imgRem = await _pdfCaptureClone('gantt-remorques', targetW, {
+      renderFn: function() { if (AppState && AppState.donnees) rendreGanttRemorques(AppState.donnees); }
+    });
+    if (imgRem) {
+      if (y + 20 > pH - mg) { doc.addPage(); y = mg; }
+      _pdfBandeau(doc, mg, y, pW - 2 * mg, 'Gantt — Remorques physiques');
+      y += 8;
+      _pdfAddImageMultiPage(doc, imgRem, mg, y, pW - 2 * mg, mg);
+    }
+
+    // ── Page 3 : Gantt Magasins ──────────────────────────────────────────
+    var imgMag = await _pdfCaptureClone('gantt-magasins', targetW, {
+      renderFn: function() { if (AppState && AppState.donnees) rendreGanttMagasins(AppState.donnees); }
+    });
+    if (imgMag) {
+      doc.addPage(); y = mg;
+      _pdfBandeau(doc, mg, y, pW - 2 * mg, 'Gantt — Magasins');
+      y += 8;
+      _pdfAddImageMultiPage(doc, imgMag, mg, y, pW - 2 * mg, mg);
+    }
+
+    // Numéros de page
+    var total = doc.internal.getNumberOfPages();
+    for (var p = 1; p <= total; p++) {
+      doc.setPage(p);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(160, 160, 160);
+      doc.text('Page ' + p + ' / ' + total, pW - mg, pH - 4, { align: 'right' });
+      doc.setTextColor(0, 0, 0);
+    }
+
+    doc.save('planning_' + new Date().toISOString().slice(0, 10) + '.pdf');
+    afficherToast('✅ PDF exporté', 'succes');
+
+  } catch(e) {
+    console.error('exporterPDF:', e);
+    afficherToast('❌ Erreur export PDF', 'erreur');
+  }
+}
+
+// ── Capture un élément (visible ou caché) via html2canvas ────────────────
+// Expose temporairement tous les ancêtres display:none, puis restaure.
+// Calcule une échelle sûre pour html2canvas : cap à 36 Mpx pour éviter OOM.
+function _pdfSafeScale(w, h) {
+  var MAX_PX = 36000000;
+  var preferred = 1.5;
+  if (w * h * preferred * preferred <= MAX_PX) return preferred;
+  return Math.max(0.5, parseFloat(Math.sqrt(MAX_PX / (w * h)).toFixed(2)));
+}
+
+async function _pdfCaptureEl(elId) {
+  var el = document.getElementById(elId);
+  if (!el) return null;
+
+  // Remonter la chaîne DOM pour exposer les ancêtres cachés
+  var toRestore = [];
+  var anc = el;
+  while (anc && anc !== document.documentElement) {
+    if (getComputedStyle(anc).display === 'none') {
+      toRestore.push({ el: anc, val: anc.style.display });
+      anc.style.display = 'block';
+    }
+    anc = anc.parentElement;
+  }
+
+  // Étendre l'overflow de l'élément et de #zone-gantt
+  var origOF  = el.style.overflow;
+  var origOFX = el.style.overflowX;
+  var origOFY = el.style.overflowY;
+  var origMH  = el.style.maxHeight;
+  el.style.overflow  = 'visible';
+  el.style.overflowX = 'visible';
+  el.style.overflowY = 'visible';
+  el.style.maxHeight = 'none';
+
+  var zg = document.getElementById('zone-gantt');
+  var zgOrig = zg ? zg.style.overflow : null;
+  if (zg) zg.style.overflow = 'visible';
+
+  // Attendre le recalcul du layout
+  await new Promise(function(r) { setTimeout(r, 120); });
+
+  var canvas = null;
+  var w = Math.max(el.scrollWidth, el.offsetWidth, 300);
+  var h = Math.max(el.scrollHeight, el.offsetHeight, 80);
+  var sc0 = _pdfSafeScale(w, h);
+  var scales = [sc0];
+  if (sc0 > 1.0) scales.push(1.0);
+  if (sc0 > 0.6) scales.push(0.6);
+  for (var _si = 0; _si < scales.length && !canvas; _si++) {
+    try {
+      canvas = await html2canvas(el, {
+        useCORS: true, allowTaint: true, scale: scales[_si],
+        width: w, height: h, logging: false, backgroundColor: '#ffffff',
+      });
+      if (canvas && canvas.width < 10) canvas = null;
+    } catch(err) {
+      console.warn('[_pdfCaptureEl] scale=' + scales[_si] + ' échec sur', elId, err);
+    }
+  }
+
+  // Restaurer l'état initial
+  el.style.overflow  = origOF;
+  el.style.overflowX = origOFX;
+  el.style.overflowY = origOFY;
+  el.style.maxHeight = origMH;
+  if (zg && zgOrig !== null) zg.style.overflow = zgOrig;
+  toRestore.forEach(function(r) { r.el.style.display = r.val; });
+
+  if (!canvas || canvas.width < 10) return null;
+  return { url: canvas.toDataURL('image/png'), w: canvas.width, h: canvas.height };
+}
+
+// ── Ajoute une image dans le PDF, ajustée à maxW×maxH ; retourne y suivant ─
+function _pdfImage(doc, img, x, y, maxW, maxH) {
+  if (!img || maxH < 5) return y;
+  var ratio = img.w / img.h;
+  var w = maxW, h = w / ratio;
+  if (h > maxH) { h = maxH; w = h * ratio; }
+  doc.addImage(img.url, 'PNG', x, y, w, h);
+  return y + h + 2;
+}
+
+// Ajoute une image pleine largeur sur une ou plusieurs pages en décalant le Y.
+// jsPDF déduplique les données image par URL → le PDF reste compact malgré
+// les appels répétés. Les viewers PDF découpent l'image au bord de page.
+function _pdfAddImageMultiPage(doc, img, x, y, maxW, mg) {
+  if (!img) return;
+  var pH   = doc.internal.pageSize.getHeight();
+  var imgW = maxW;
+  var imgH = imgW / (img.w / img.h);
+  var avail0 = pH - mg - y;      // espace libre sur la page courante
+  var availN = pH - 2 * mg;      // espace libre sur les pages suivantes
+
+  doc.addImage(img.url, 'PNG', x, y, imgW, imgH);
+  if (imgH <= avail0) return;
+
+  // Tant qu'il reste du contenu non affiché : nouvelle page, même image décalée
+  var consumed = avail0;
+  while (consumed < imgH) {
+    doc.addPage();
+    doc.addImage(img.url, 'PNG', x, mg - consumed, imgW, imgH);
+    consumed += availN;
+  }
+}
+
+// ── En-tête du document ───────────────────────────────────────────────────
+function _pdfEnTete(doc, pW, mg, y) {
+  doc.setFillColor(127, 0, 0);
+  doc.rect(mg, y, pW - 2 * mg, 13, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(14);
+  doc.setTextColor(255, 255, 255);
+  doc.text('Planning Logistique', pW / 2, y + 9, { align: 'center' });
+  y += 16;
+  var now = new Date();
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(120, 120, 120);
+  doc.text(
+    'Export du ' + now.toLocaleDateString('fr-FR') + ' à ' +
+    now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+    mg, y
+  );
+  doc.setTextColor(0, 0, 0);
+  return y + 5;
+}
+
+// ── Bandeau rouge de section ─────────────────────────────────────────────
+function _pdfBandeau(doc, x, y, w, titre) {
+  doc.setFillColor(127, 0, 0);
+  doc.rect(x, y, w, 7, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(255, 255, 255);
+  doc.text(titre, x + 3, y + 5);
+  doc.setTextColor(0, 0, 0);
+}
+
+// ── Cache/restaure les éléments du module Atelier (M0) dans le Gantt ────
+function _pdfMasquerM0() {
+  var hidden = [];
+  var cont = document.getElementById('gantt-modules-contenu');
+  if (!cont) return hidden;
+  function masquer(el) {
+    if (hidden.some(function(r) { return r.el === el; })) return;
+    hidden.push({ el: el, display: el.style.display });
+    el.style.display = 'none';
+  }
+  cont.querySelectorAll('[data-modid="M0"]').forEach(masquer);
+  cont.querySelectorAll('.gantt-ligne-m0').forEach(masquer);
+  cont.querySelectorAll('.gantt-module-group-header').forEach(function(el) {
+    if (el.textContent.toLowerCase().indexOf('atelier') !== -1) masquer(el);
+  });
+  return hidden;
+}
+function _pdfRestaurerM0(hidden) {
+  hidden.forEach(function(r) { r.el.style.display = r.display; });
+}
+
+// ── Clone un élément, le place dans un wrapper opacity:0 hors de tout ───────
+// contexte grid/flex, le redimensionne à targetW px, puis le capture.
+// opts.renderFn    : appelée sur l'élément ORIGINAL avant clonage (peuple le contenu)
+// opts.bilanLayout : si true, réorganise les sections-enfants en flex-row
+async function _pdfCaptureClone(elId, targetW, opts) {
+  var el = document.getElementById(elId);
+  if (!el) return null;
+  opts = opts || {};
+
+  // 1. Rendre le contenu dans l'original (display:none accepté pour innerHTML)
+  if (opts.renderFn) opts.renderFn();
+  await new Promise(function(r) { setTimeout(r, 80); });
+
+  // 2. Cloner après rendu (le clone contient le contenu peuplé)
+  var clone = el.cloneNode(true);
+
+  // 3. Libérer toutes les contraintes de taille sur le clone
+  clone.style.display   = 'block';
+  clone.style.width     = targetW + 'px';
+  clone.style.minWidth  = targetW + 'px';
+  clone.style.maxWidth  = 'none';
+  clone.style.height    = 'auto';
+  clone.style.maxHeight = 'none';
+  clone.style.overflow  = 'visible';
+  clone.style.overflowX = 'visible';
+  clone.style.overflowY = 'visible';
+  clone.style.position  = 'static';
+  clone.style.boxSizing = 'border-box';
+
+  // 4. Pour le bilan : réorganiser les sections entrepôt côte à côte
+  if (opts.bilanLayout) {
+    var contClone = clone.querySelector('[id$="-contenu"]') || clone;
+    contClone.style.display       = 'flex';
+    contClone.style.flexDirection = 'row';
+    contClone.style.flexWrap      = 'wrap';
+    contClone.style.overflow      = 'visible';
+    contClone.style.maxHeight     = 'none';
+    var sections = contClone.querySelectorAll(':scope > div');
+    var nCols = Math.max(1, Math.min(sections.length, 4));
+    var sectW = Math.floor(targetW / nCols);
+    sections.forEach(function(sec) {
+      sec.style.flex      = '0 0 ' + sectW + 'px';
+      sec.style.width     = sectW + 'px';
+      sec.style.minWidth  = sectW + 'px';
+      sec.style.boxSizing = 'border-box';
+    });
+  }
+
+  // 5. Insérer dans un wrapper position:fixed, opacity:0 — complètement hors
+  //    du CSS grid/flex de #main/#zone-gantt → offsetWidth/offsetHeight libres
+  var wrapper = document.createElement('div');
+  wrapper.style.cssText = 'position:fixed;top:0;left:0;width:' + targetW + 'px;' +
+    'opacity:0;pointer-events:none;overflow:visible;z-index:-1;';
+  wrapper.appendChild(clone);
+  document.body.appendChild(wrapper);
+
+  await new Promise(function(r) { setTimeout(r, 200); });
+
+  // 6. Capturer — scrollWidth/scrollHeight = contenu complet, sans troncature
+  var canvas = null;
+  var w = Math.max(clone.scrollWidth, clone.offsetWidth, targetW);
+  var h = Math.max(clone.scrollHeight, clone.offsetHeight, 80);
+  var sc0 = _pdfSafeScale(w, h);
+  var scales = [sc0];
+  if (sc0 > 1.0) scales.push(1.0);
+  if (sc0 > 0.6) scales.push(0.6);
+  for (var _si = 0; _si < scales.length && !canvas; _si++) {
+    try {
+      canvas = await html2canvas(clone, {
+        useCORS: true, allowTaint: true, scale: scales[_si],
+        width: w, height: h, logging: false, backgroundColor: '#ffffff',
+      });
+      if (canvas && canvas.width < 10) canvas = null;
+    } catch(err) {
+      console.warn('[_pdfCaptureClone] scale=' + scales[_si] + ' échec sur', elId, err);
+    }
+  }
+
+  // 7. Nettoyer le wrapper
+  document.body.removeChild(wrapper);
+
+  if (!canvas || canvas.width < 10) return null;
+  return { url: canvas.toDataURL('image/png'), w: canvas.width, h: canvas.height };
+}
+
+// ── Légende des couleurs et types de blocs ───────────────────────────────
+function _pdfLegende(doc, x, y, availW) {
+  var boxH = 14;
+  var bSz  = 3.5;
+  var gap  = 1.8;
+  var colW = 48;
+
+  doc.setFillColor(245, 247, 250);
+  doc.rect(x, y, availW, boxH, 'F');
+  doc.setDrawColor(210, 210, 210);
+  doc.setLineWidth(0.2);
+  doc.rect(x, y, availW, boxH);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(80, 80, 80);
+  doc.text('LÉGENDE', x + 3, y + 5);
+
+  var blocs = [
+    { r: 158, g: 158, b: 158, label: 'Trajet'          },
+    { r: 69,  g: 90,  b: 100, label: 'Retour dépôt'    },
+    { r: 253, g: 216, b: 53,  label: 'Pause service'   },
+    { r: 198, g: 40,  b: 40,  label: 'Pause conduite'  },
+    { r: 183, g: 28,  b: 28,  label: 'Chargement'      },
+    { r: 141, g: 110, b: 99,  label: 'Emballage (ARP)' },
+  ];
+
+  var by = y + boxH - 4;
+  var bx = x + 3;
+  blocs.forEach(function(it) {
+    doc.setFillColor(it.r, it.g, it.b);
+    doc.rect(bx, by - bSz + 0.5, bSz, bSz, 'F');
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.2);
+    doc.setTextColor(30, 30, 30);
+    doc.text(it.label, bx + bSz + gap, by);
+    bx += colW;
+  });
+
+  // Changement chauffeur (hachuré — 2 rectangles côte à côte)
+  doc.setFillColor(55, 71, 79);
+  doc.rect(bx, by - bSz + 0.5, bSz * 0.5, bSz, 'F');
+  doc.setFillColor(96, 125, 139);
+  doc.rect(bx + bSz * 0.5, by - bSz + 0.5, bSz * 0.5, bSz, 'F');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.2);
+  doc.setTextColor(30, 30, 30);
+  doc.text('Changement chauffeur', bx + bSz + gap, by);
+  bx += colW + 14;
+
+  // Plage nuit
+  doc.setFillColor(200, 215, 245);
+  doc.rect(bx, by - bSz + 0.5, bSz * 1.6, bSz, 'F');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.2);
+  doc.setTextColor(30, 30, 30);
+  doc.text('Plage nuit (22h–06h)', bx + bSz * 1.6 + gap, by);
+
+  doc.setTextColor(0, 0, 0);
+  return y + boxH + 4;
 }
 
 function importerSession() {
