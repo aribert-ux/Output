@@ -1163,6 +1163,8 @@
   </style>
   <!-- SheetJS — lecture du fichier Excel dans le navigateur, sans serveur -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <!-- ExcelJS — export Excel avec mise en forme (couleurs, bordures) -->
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 </head>
 <body>
 
@@ -1191,8 +1193,8 @@
     <input  type="file" id="input-session"    accept=".json"       style="display:none" onchange="onSessionImportee(this)">
     <button class="btn btn-secondary" onclick="actualiserDonnees()">🔄 Actualiser</button>
     <button class="btn btn-secondary" onclick="importerSession()" title="Charger une session précédente (.json)">📥 Importer</button>
-    <button class="btn btn-success"   onclick="sauvegarderPlanUI()">💾 Exporter JSON</button>
-    <button class="btn btn-secondary" onclick="exporterCSV()" title="Exporter le planning en CSV">📋 CSV</button>
+    <button class="btn btn-success"   onclick="sauvegarderPlanUI()">💾 Enregistrer JSON</button>
+    <button class="btn btn-secondary" onclick="exporterXLSX()" title="Exporter le planning en Excel (.xlsx)">📊 Excel</button>
     <button class="btn btn-primary"   onclick="ouvrirValidation()">🔍 Valider</button>
   </div>
 </div>
@@ -2502,7 +2504,7 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
     }
 
     // Navette : transit seul — pas de déchargement ni de bloc livraison
-    if (arret.isNavette) { lastNavetteUT = parseFloat(arret.utAffecte !== undefined ? arret.utAffecte : (arret.ut || 0)); lastNavetteDest = lieuPrec = lieu || lieuPrec; return; }
+    if (arret.isNavette) { lastNavetteUT = parseFloat(arret.utAffecte !== undefined ? arret.utAffecte : (arret.ut || 0)); lastNavetteDest = lieuPrec = lieu || lieuPrec; blocs.push({ type:'_navette', debut:curseur, duree:0, arret:arret }); return; }
     lastNavetteDest = null; // arret normal → réinitialiser
 
     // Livraison : service uniquement, pause parallèle possible si livraison assez longue
@@ -10718,40 +10720,240 @@ function sauvegarderPlanUI() {
   demarrerAutoSave();
 }
 
-function exporterCSV() {
+function exporterXLSX() {
   var data = AppState.donnees;
   var distMap = {}, reglesDech = [];
   lireDistancierWb().forEach(function(d) { distMap[d.f+'_'+d.t] = {km:d.km,m:d.m}; });
-  var lignes = ['Module,Tournée,Remorque,Magasin,Marchandise,UT,HeureEstimée'];
-  AppState.modules.forEach(function(mod) {
+  var jourLabel = AppState.jourActif || 'Jour';
+
+  // ── Helpers ──────────────────────────────────────────────────────────
+  function hhmm(minutes) {
+    var m = ((Math.round(minutes) % 1440) + 1440) % 1440;
+    return (Math.floor(m/60)<10?'0':'')+Math.floor(m/60)+':'+(m%60<10?'0':'')+m%60;
+  }
+  function stripEnt(n) { return (n||'').replace(/^ENT\s+/i,'').trim(); }
+  function numTournee(tid) { return /^TL/i.test(tid) ? tid.replace(/^TL/i,'') : tid.slice(-4); }
+
+  // ── Blocs par tournée pour un module ─────────────────────────────────
+  function buildBlocsMap(mod) {
+    var map = {};
     mod.tours.forEach(function(tid) {
       var flux = AppState.planLocal[tid] || [];
       if (!flux.length) return;
-      var t = data ? getTourneeData(tid, data) : null;
+      var t  = data ? getTourneeData(tid, data) : null;
       var ov = (AppState.tourneeOverrides && AppState.tourneeOverrides[tid]) || {};
-      var offset = AppState.modulesOffsets[mod.id+'_'+tid] || 6*60;
-      var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? parseFloat(t[4])||_chgtDurFallback(tid) : _chgtDurFallback(tid));
-      var admDur  = ov.admDur  !== undefined ? +ov.admDur  : (t ? parseFloat(t[3])||15 : 15);
-      var retour  = ov.retour  !== undefined ? ov.retour   : (t ? (t[2]||'ENTREPOT').toString() : 'ENTREPOT');
-      var rem = AppState.tourneeRemorque[tid] || '';
-      var blocs = calculerPlanningGantt(offset+chgtDur+admDur, flux, distMap, reglesDech, retour, admDur, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, ov.fusionMag || null);
-      blocs.filter(function(b){return b.type==='livraison'&&b.arret;}).forEach(function(b) {
-        var a = b.arret;
-        var ut = a.utAffecte !== undefined ? a.utAffecte : a.ut;
-        lignes.push([
-          mod.id, tid, rem, a.magasin||a.lieu||'', a.marchandise||'', ut, minutesVersHeure(b.debut)
-        ].map(function(v){ return '"'+String(v).replace(/"/g,'""')+'"'; }).join(','));
-      });
+      var offset   = AppState.modulesOffsets[mod.id+'_'+tid] || 360;
+      var chgtDur  = ov.chgtDur!==undefined ? +ov.chgtDur : (t ? parseFloat(t[4])||_chgtDurFallback(tid) : _chgtDurFallback(tid));
+      var admDur   = ov.admDur !==undefined ? +ov.admDur  : (t ? parseFloat(t[3])||15 : 15);
+      var retour   = ov.retour !==undefined ? ov.retour   : (t ? (t[2]||'ENTREPOT').toString() : 'ENTREPOT');
+      var hasFrais = flux.some(function(f){ return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase())>=0; });
+      var entrepotDep = (flux[0]&&flux[0].entrepot)||(t&&t[6]?t[6].toString():'')||'ENTREPOT';
+      var tractorStart = hasFrais ? (offset+chgtDur+admDur) : (offset+admDur);
+      var blocs = calculerPlanningGantt(tractorStart, flux, distMap, reglesDech, retour, admDur, entrepotDep);
+      blocs._entrepotDep = entrepotDep;
+      blocs._retourLieu  = retour;
+      map[tid] = blocs;
     });
+    return map;
+  }
+
+  // ── Groupes de shifts pour un module ─────────────────────────────────
+  // Retourne [[{tid, fromMin, toMin}, ...], ...]
+  function buildShiftGroups(mod, toursActifs, blocsMap) {
+    var manualSplits = (AppState.shiftSplits && AppState.shiftSplits[mod.id]) || [];
+    var groups = [], cur = [];
+    toursActifs.forEach(function(tid) {
+      var blocs = blocsMap[tid] || [];
+      var ccBlocs = blocs.filter(function(b){ return b._isChauffeurSplit; });
+      if (ccBlocs.length > 0) {
+        var splitAt   = ccBlocs[0].debut;
+        var splitFrom = ccBlocs[ccBlocs.length-1].debut + ccBlocs[ccBlocs.length-1].duree;
+        cur.push({ tid:tid, fromMin:null, toMin:splitAt });
+        groups.push(cur);
+        cur = [{ tid:tid, fromMin:splitFrom, toMin:null }];
+      } else {
+        cur.push({ tid:tid, fromMin:null, toMin:null });
+        if (manualSplits.indexOf(tid) >= 0) { groups.push(cur); cur = []; }
+      }
+    });
+    if (cur.length) groups.push(cur);
+    return groups;
+  }
+
+  // Amplitude d'un groupe shift en minutes
+  function shiftAmplitude(segTids, blocsMap) {
+    var start = Infinity, end = 0;
+    segTids.forEach(function(s) {
+      start = Math.min(start, s.fromMin!=null ? s.fromMin : _computeChargementDebut(s.tid));
+      var blocs = blocsMap[s.tid] || [];
+      if (s.toMin!=null) { end = Math.max(end, s.toMin); }
+      else if (blocs.length) { var lb=blocs[blocs.length-1]; end=Math.max(end, lb.debut+lb.duree); }
+    });
+    return (start===Infinity||end===0) ? 0 : end-start;
+  }
+
+  // Blocs filtrés pour un segment (sans blocs changement_chauffeur, dans la plage horaire)
+  function segmentBlocs(allBlocs, fromMin, toMin) {
+    return allBlocs.filter(function(b) {
+      if (b._isChauffeurSplit) return false;
+      if (fromMin!=null && b.debut+b.duree<=fromMin) return false;
+      if (toMin!=null   && b.debut>=toMin)            return false;
+      return true;
+    });
+  }
+
+  // ── Workbook ExcelJS ─────────────────────────────────────────────────
+  var wb = new ExcelJS.Workbook();
+  var ws = wb.addWorksheet('Planning ' + jourLabel);
+
+  ws.columns = [
+    {width:20},{width:10},{width:16},{width:22},{width:14},
+    {width:10},{width:10},{width:22},{width:16},{width:10},
+    {width:20},{width:10},{width:10},{width:8 },{width:14},
+    {width:14},{width:16},{width:12},{width:16},{width:10}
+  ];
+
+  var THIN  = { style:'thin',   color:{argb:'FF000000'} };
+  var THICK = { style:'medium', color:{argb:'FF000000'} };
+  var bdrThin  = { top:THIN,  bottom:THIN,  left:THIN,  right:THIN  };
+  var bdrThick = { top:THICK, bottom:THICK, left:THICK, right:THICK };
+  var GREEN_FILL  = { type:'pattern', pattern:'solid', fgColor:{argb:'FFC8E6C9'} };
+  var DKBLUE_FILL = { type:'pattern', pattern:'solid', fgColor:{argb:'FF1A237E'} };
+
+  function setBorder(row, bdr, c1, c2) {
+    for (var c=c1; c<=c2; c++) row.getCell(c).border = bdr;
+  }
+
+  // Ligne 1 : en-têtes colonnes
+  var hdrRow = ws.addRow([
+    'jour de chargement','CHARGEMENT','SITE','MAGASIN','GROUPAGE',
+    'CAPACITE','NBE PALS','ANNULE MODIFIE AJOUT','TRANSPORTEUR','Module',
+    'COMMENTAIRE','HLD','HORAIRE','ARP','TYPE',
+    'HEURE RETOUR','RETOUR SITE','Remorque','N° Remorque','Amplitude'
+  ]);
+  hdrRow.font = { bold:true };
+  setBorder(hdrRow, bdrThick, 2, 20);
+
+  // Ligne 2 : toujours vide
+  ws.addRow([]);
+
+  // ── Données par module ───────────────────────────────────────────────
+  var modsActifs = AppState.modules.filter(function(m) {
+    return m.id!=='M0' && m.tours.some(function(tid){ return (AppState.planLocal[tid]||[]).length>0; });
   });
-  var blob = new Blob(['﻿' + lignes.join('\r\n')], { type:'text/csv;charset=utf-8' });
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement('a');
-  a.href = url;
-  a.download = 'planning_' + (AppState.jourActif||'Jour') + '.csv';
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
-  afficherToast('✅ CSV exporté', 'succes');
+
+  modsActifs.forEach(function(mod, modIdx) {
+    var toursActifs = mod.tours.slice().sort(function(a,b) {
+      return (AppState.modulesOffsets[mod.id+'_'+a]||360)-(AppState.modulesOffsets[mod.id+'_'+b]||360);
+    }).filter(function(tid){ return (AppState.planLocal[tid]||[]).length>0; });
+    if (!toursActifs.length) return;
+
+    var bMap   = buildBlocsMap(mod);
+    var groups = buildShiftGroups(mod, toursActifs, bMap);
+
+    groups.forEach(function(segTids, grpIdx) {
+      var ampMin    = shiftAmplitude(segTids, bMap);
+      var amplitude = ampMin > 0 ? hhmm(ampMin) : '';
+      var firstOfShift = true;
+
+      segTids.forEach(function(segInfo) {
+        var tid      = segInfo.tid;
+        var allBlocs = bMap[tid] || [];
+        var blocs    = segmentBlocs(allBlocs, segInfo.fromMin, segInfo.toMin);
+        var ov       = (AppState.tourneeOverrides&&AppState.tourneeOverrides[tid])||{};
+        var capacite    = ov.capacite || 33;
+        var entrepotDep = allBlocs._entrepotDep || '';
+        var retourLieu  = allBlocs._retourLieu  || '';
+
+        var firstTrajet = blocs.find(function(b){ return b.type==='trajet'; });
+        var hld = firstTrajet ? hhmm(firstTrajet.debut) : '';
+
+        var lastRoute = null;
+        for (var i=blocs.length-1; i>=0; i--) {
+          if (blocs[i].type==='trajet'||blocs[i].type==='retour') { lastRoute=blocs[i]; break; }
+        }
+        var heureRetour = lastRoute ? hhmm(lastRoute.debut+lastRoute.duree) : '';
+        var chargement  = hhmm(_computeChargementDebut(tid));
+        var firstOfTournee = true;
+
+        blocs.forEach(function(bloc, bi) {
+          if (bloc.type !== 'livraison' && bloc.type !== '_navette') return;
+          var a  = bloc.arret || {};
+          var ut = a.utAffecte!==undefined ? a.utAffecte : (a.ut||'');
+
+          // Les navettes n'ont pas d'emballage
+          var hasArp = bloc.type === 'livraison' && bi < blocs.length-1 && blocs[bi+1].type==='emballage';
+
+          var typeMarc;
+          if (a._mergedParts && a._mergedParts.length) {
+            var types = [];
+            a._mergedParts.forEach(function(p){ if(p.marchandise&&types.indexOf(p.marchandise)<0) types.push(p.marchandise); });
+            typeMarc = types.join('/');
+          } else { typeMarc = a.marchandise||''; }
+
+          var commentaire = a.isNavette ? 'Nav '+(a.zoneEntrepot||'') : '';
+
+          var row = ws.addRow([
+            jourLabel,                              // A  Jour de chargement
+            chargement,                             // B  CHARGEMENT
+            stripEnt(entrepotDep),                  // C  SITE
+            a.magasin||a.lieu||'',                  // D  MAGASIN
+            tid,                                    // E  GROUPAGE (rouge)
+            firstOfTournee ? capacite : '',         // F  CAPACITE (vert si 1ère liv. de la tournée)
+            ut,                                     // G  NBE PALS
+            '',                                     // H  ANNULE MODIFIE AJOUT
+            '',                                     // I  TRANSPORTEUR
+            mod.id,                                 // J  Module
+            commentaire,                            // K  COMMENTAIRE
+            hld,                                    // L  HLD
+            hhmm(bloc.debut),                       // M  HORAIRE
+            hasArp ? '✗' : '',                      // N  ARP (croix rouge si coché)
+            typeMarc,                               // O  TYPE
+            heureRetour,                            // P  HEURE RETOUR
+            stripEnt(retourLieu),                   // Q  RETOUR SITE
+            '',                                     // R  Remorque
+            numTournee(tid),                        // S  N° Remorque (vert)
+            firstOfShift ? amplitude : ''           // T  Amplitude (vert, 1ère liv. du shift)
+          ]);
+
+          setBorder(row, bdrThin, 2, 20);
+
+          row.getCell(5).font  = { color:{argb:'FFFF0000'} };         // E GROUPAGE rouge
+          if (firstOfTournee) row.getCell(6).fill = GREEN_FILL;        // F CAPACITE vert
+          if (hasArp)  row.getCell(14).font = { bold:true, color:{argb:'FFFF0000'} }; // N ARP rouge
+          row.getCell(19).fill = GREEN_FILL;                           // S N° Remorque vert
+          if (firstOfShift) row.getCell(20).fill = GREEN_FILL;        // T Amplitude vert
+
+          firstOfShift   = false;
+          firstOfTournee = false;
+        });
+      });
+
+      // Séparateur de shift : ligne bleu foncé (cols C–T)
+      if (grpIdx < groups.length-1) {
+        var sepRow = ws.addRow([]);
+        for (var c=3; c<=20; c++) sepRow.getCell(c).fill = DKBLUE_FILL;
+        setBorder(sepRow, bdrThin, 2, 20);
+      }
+    });
+
+    // Séparateur de module : ligne blanche
+    if (modIdx < modsActifs.length-1) ws.addRow([]);
+  });
+
+  // ── Téléchargement ───────────────────────────────────────────────────
+  wb.xlsx.writeBuffer().then(function(buf) {
+    var blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    var url  = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href=url; a.download='planning_'+jourLabel+'.xlsx';
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+    afficherToast('✅ Excel exporté','succes');
+  }).catch(function(err) {
+    console.error('Export XLSX :', err);
+    afficherToast('❌ Erreur export Excel','erreur');
+  });
 }
 
 function importerSession() {
@@ -10851,6 +11053,9 @@ function basculerVue(vue) {
   document.getElementById('btn-vue-modules').className   = 'btn ' + (vue === 'modules'   ? 'btn-primary' : 'btn-secondary');
   document.getElementById('btn-vue-remorques').className = 'btn ' + (vue === 'remorques' ? 'btn-primary' : 'btn-secondary');
   document.getElementById('btn-vue-magasins').className  = 'btn ' + (vue === 'magasins'  ? 'btn-primary' : 'btn-secondary');
+  // Ajuste la largeur de la colonne droite selon le panel visible
+  document.getElementById('main').style.gridTemplateColumns =
+    vue === 'remorques' ? '1fr 440px' : vue === 'modules' || vue === 'flux' ? '1fr 360px' : '1fr 440px';
   // Panels latéraux
   var pnl = document.getElementById('panel-tournees');
   if (pnl) pnl.classList.toggle('panel-hidden', vue !== 'modules' && vue !== 'flux');
@@ -11138,6 +11343,7 @@ function rendreGanttRemorques(data) {
     bar.appendChild(segAdm);
 
     blocs.forEach(function(bloc) {
+      if (bloc.type === '_navette') return; // marqueur interne — pas de rendu visuel
       var segEl = document.createElement('div');
       segEl.className = 'tour-seg';
       segEl.style.left  = ((bloc.debut - barLeft) * PPM) + 'px';
