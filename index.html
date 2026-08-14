@@ -1762,7 +1762,7 @@
         </label>
         <label style="font-size:12px;font-weight:600;color:#455A64">
           Chargement (min)
-          <input id="ajout-new-chgt" type="number" class="form-control" value="60" min="0" max="240" style="margin-top:4px">
+          <input id="ajout-new-chgt" type="number" class="form-control" placeholder="Auto" min="0" max="240" style="margin-top:4px">
         </label>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">
@@ -3250,7 +3250,7 @@ function afficherPanelTournees(modId) {
       return m === 'FL' || m === 'PF';
     });
     var cap = ov.capacite !== undefined ? +ov.capacite : (t ? (parseFloat(t[1]) || 33) : 33);
-    var chg = ov.chgtDur  !== undefined ? +ov.chgtDur  : (t ? (parseFloat(t[4]) || (isFOS ? 60 : 0)) : (isFOS ? 60 : 0));
+    var chg = ov.chgtDur  !== undefined ? +ov.chgtDur  : (t ? (parseFloat(t[4]) || _chgtDurFallback(tid)) : _chgtDurFallback(tid));
     var adm = ov.admDur   !== undefined ? +ov.admDur   : (t ? (parseFloat(t[3]) || 15) : 15);
     var ret = ov.retour   !== undefined ? ov.retour    : (t ? (t[2] ? t[2].toString() : 'ENTREPOT') : 'ENTREPOT');
     var _fze  = flux.find(function(f) { return f.entrepot; });
@@ -5658,6 +5658,8 @@ function ouvrirModalTournee() {
   }
   var lbl = document.getElementById('ajout-module-label');
   if (lbl) lbl.textContent = 'Module sélectionné : ' + _moduleSelectionne;
+  var chgtInp = document.getElementById('ajout-new-chgt');
+  if (chgtInp) chgtInp.value = '';
   document.getElementById('modal-tournee').classList.add('visible');
 }
 
@@ -5670,7 +5672,7 @@ function confirmerAjoutTournee() {
   var cap       = parseFloat((document.getElementById('ajout-new-cap')  || {}).value) || 33;
   var adm       = parseFloat((document.getElementById('ajout-new-adm')  || {}).value) || 15;
   var chgtManuel = parseFloat((document.getElementById('ajout-new-chgt') || {}).value);
-  var chgtManuel = isNaN(chgtManuel) ? 60 : chgtManuel;
+  var chgtManuel = isNaN(chgtManuel) ? 0 : chgtManuel;
 
   if (!AppState.tourneesLocales) AppState.tourneesLocales = [];
   var allTids = {};
@@ -8254,7 +8256,6 @@ function _afOpt_phase1_ffd(fluxList) {
 
     for (var gi = 0; gi < groupes.length; gi++) {
       var g = groupes[gi];
-      if (g.famille  !== famille)       continue;
       if (g.entrepot !== flux.entrepot) continue;
       if (g.utTotal + flux.ut > CAP + 0.01) continue;
       var testFlux = g.flux.concat([flux]);
@@ -8331,7 +8332,7 @@ function _afOpt_phase1_fractionner(groupes, fluxOriginaux) {
 
     for (var gi = 0; gi < groupes.length && rest > 0.01; gi++) {
       var g     = groupes[gi];
-      if (g.famille !== famille || g.entrepot !== fluxSrc.entrepot) continue;
+      if (g.entrepot !== fluxSrc.entrepot) continue;
       var libre = Math.round((CAP - g.utTotal) * 10) / 10;
       if (libre <= 0.01) continue;
       var testFlux = g.flux.concat([fluxSrc]);
