@@ -8117,12 +8117,129 @@ function _afOpt_phase05_navettes(fluxList, dm, jour) {
   var CAP = 33;
   var jourLower = (_jMat(jour) || '').toLowerCase();
 
-  // 1. Grouper tous les flux par entrepôt
+  // Entrepôt forcé en navette intégrale : tous ses flux partent vers le meilleur accueil,
+  // et il n'est jamais proposé comme entrepôt de réception.
+  var EP_NAVETTE_FORCE = 'ENT MEYZIEU MEDLEY SUD';
+
+  // 0. Traiter l'entrepôt forcé : navetter TOUS ses flux (pas seulement ≤1 UT)
+  (function() {
+    var fluxForces = fluxList.filter(function(f) {
+      return !f._isFluxNavettise && f.entrepot === EP_NAVETTE_FORCE;
+    });
+    if (!fluxForces.length) return;
+
+    // Collecter les magasins desservis par chaque entrepôt potentiel d'accueil
+    var magByEp = {};
+    fluxList.forEach(function(f) {
+      if (f._isFluxNavettise || f.entrepot === EP_NAVETTE_FORCE) return;
+      if (!magByEp[f.entrepot]) magByEp[f.entrepot] = {};
+      magByEp[f.entrepot][f.magasin] = true;
+    });
+
+    // Trouver le meilleur accueil (max jumeaux, même critère que la boucle principale)
+    var magsForces = {};
+    fluxForces.forEach(function(f) { magsForces[f.magasin] = true; });
+    var bestRelay = null, bestCount = 0;
+    Object.keys(magByEp).forEach(function(ep) {
+      var cnt = Object.keys(magsForces).filter(function(m) { return magByEp[ep][m]; }).length;
+      if (cnt > bestCount || (cnt === bestCount && bestRelay === null)) {
+        bestRelay = ep; bestCount = cnt;
+      }
+    });
+    // Repli : si aucun jumeau, prendre l'entrepôt le plus fourni en magasins
+    if (!bestRelay) {
+      var maxMags = 0;
+      Object.keys(magByEp).forEach(function(ep) {
+        var n = Object.keys(magByEp[ep]).length;
+        if (n > maxMags) { maxMags = n; bestRelay = ep; }
+      });
+    }
+    if (!bestRelay) return;
+
+    // Grouper en bundles ≤33 UT par famille/compatibilité (même logique que boucle)
+    var bundles = [];
+    fluxForces.slice().sort(function(a, b) { return b.ut - a.ut; }).forEach(function(f) {
+      var fam = _afOpt_getFamille(f.marchandise);
+      var placed = false;
+      for (var bi = 0; bi < bundles.length; bi++) {
+        var bkt = bundles[bi];
+        if (bkt.famille !== fam) continue;
+        if (bkt.utTotal + f.ut > CAP + 0.01) continue;
+        var testFlux = bkt.flux.concat([f]);
+        if (typeof validerCompatibiliteMarchandises === 'function' &&
+            !validerCompatibiliteMarchandises(testFlux).valide) continue;
+        bkt.flux.push(f);
+        bkt.utTotal = Math.round((bkt.utTotal + f.ut) * 10) / 10;
+        placed = true; break;
+      }
+      if (!placed) bundles.push({ famille: fam, utTotal: f.ut, flux: [f] });
+    });
+
+    // Créer les navettes
+    var distFR = (_afOpt_getDist(dm, EP_NAVETTE_FORCE, bestRelay) || { m: 60 }).m;
+    bundles.forEach(function(bkt) {
+      var idx         = ++_afOpt_navetteCount;
+      var navetteId   = 'NAV_OPT_' + idx;
+      var primaryNfId = 'NAVFX_OPT_' + idx + '_0';
+      var primaryMarc = bkt.flux[0].marchandise;
+      var tdBundle    = bkt.utTotal <= 9 ? 15 : bkt.utTotal <= 18 ? 30 : 45;
+      var arriveeMin  = 360 + distFR + tdBundle;
+
+      AppState.navettesLibres.push({
+        _navetteId:   navetteId,
+        _navFluxId:   primaryNfId,
+        entrepot:     EP_NAVETTE_FORCE,
+        magasin:      bestRelay,
+        ut:           bkt.utTotal,
+        marchandise:  primaryMarc,
+        zoneEntrepot: '',
+        isNavette:    true,
+        _autoOpt:     true
+      });
+      _afOpt_autoCreatedNavIds.push(navetteId);
+
+      bkt.flux.forEach(function(f, fi) {
+        var nfId = 'NAVFX_OPT_' + idx + '_' + fi;
+        AppState.fluxNavettes.push({
+          _navFluxId:      nfId,
+          _navetteId:      navetteId,
+          magasin:         f.magasin,
+          marchandise:     f.marchandise,
+          entrepotOrigine: EP_NAVETTE_FORCE,
+          entrepotRelay:   bestRelay,
+          utNavette:       f.ut,
+          jour:            jour,
+          _autoOpt:        true
+        });
+        _afOpt_autoCreatedNavFluxIds.push(nfId);
+
+        AppState.fluxDerivesNavette.push({
+          _navFluxId:       nfId,
+          _navetteId:       navetteId,
+          magasin:          f.magasin,
+          marchandise:      f.marchandise,
+          ut:               f.ut,
+          entrepot:         bestRelay,
+          entrepotOrigine:  EP_NAVETTE_FORCE,
+          _isFluxNavettise: true,
+          _arriveeNavMin:   arriveeMin,
+          jour:             jour,
+          _autoOpt:         true
+        });
+      });
+
+      console.log('[afOpt] phase05 force:', navetteId, EP_NAVETTE_FORCE, '→', bestRelay,
+        bkt.utTotal + ' UT (' + bkt.flux.map(function(f) { return f.magasin; }).join(', ') + ')');
+    });
+  })();
+
+  // 1. Grouper tous les flux par entrepôt (Mezley Sud exclu : déjà traité, jamais en réception)
   var allMagByEp   = {}; // entrepot → { magasin: true }
   var smallFluxByEp = {}; // entrepot → [ flux avec ut ≤ 1 ]
 
   fluxList.forEach(function(f) {
     if (f._isFluxNavettise) return; // flux dérivés déjà existants : ignorés
+    if (f.entrepot === EP_NAVETTE_FORCE) return; // traité séparément, jamais en réception
     if (!allMagByEp[f.entrepot])   allMagByEp[f.entrepot]   = {};
     if (!smallFluxByEp[f.entrepot]) smallFluxByEp[f.entrepot] = [];
     allMagByEp[f.entrepot][f.magasin] = true;
