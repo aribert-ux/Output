@@ -8826,6 +8826,37 @@ function _afOpt_findBestPermutation(groupe, dm, jour) {
   return best;
 }
 
+// Diagnostique pourquoi _afOpt_findBestPermutation a retourné null pour un groupe.
+// Retourne une chaîne parmi : 'dist_manquante', 'carto_vide', 'fenetre_trop_courte', 'creneaux_incompatibles'.
+function _afOpt_diagnoseFail(groupe, dm, jour) {
+  var isFrais = (groupe.famille === 'FRAIS' || groupe.famille === 'SURG');
+  var SETUP   = (isFrais ? 60 : 0) + 15;
+
+  var mags = [], vus = {};
+  groupe.flux.forEach(function(f) {
+    if (!vus[f.magasin]) { vus[f.magasin] = true; mags.push(f.magasin); }
+  });
+
+  var arrets = mags.map(function(mag) {
+    var ut = 0, marc = '';
+    groupe.flux.forEach(function(f) { if (f.magasin === mag) { ut += (f.utAffecte || 0); marc = f.marchandise; } });
+    return { magasin: mag, marchandise: marc, ut: ut, utAffecte: ut, entrepot: groupe.entrepot };
+  });
+
+  var sim = _afOpt_simulerGroupe(groupe.entrepot, arrets, dm, jour);
+  if (!sim.valid) return sim.error; // 'dist_manquante' ou 'carto_vide'
+
+  var debutMin = 360;
+  groupe.flux.forEach(function(f) { if (f._arriveeNavMin && f._arriveeNavMin > debutMin) debutMin = f._arriveeNavMin; });
+
+  var lastFinRel   = sim.deliveryTimes.length ? sim.deliveryTimes[sim.deliveryTimes.length - 1].finRel : 0;
+  var DEBUT_GLOBAL = Math.max(360, debutMin);
+  var FIN_GLOBAL   = Math.min(1800, 1890 - SETUP - lastFinRel);
+  if (FIN_GLOBAL <= DEBUT_GLOBAL) return 'fenetre_trop_courte';
+
+  return 'creneaux_incompatibles';
+}
+
 // ══════════════════════════════════════════════════════════════════
 // PHASE 1.5 — Tri des groupes (score α/β)
 // ══════════════════════════════════════════════════════════════════
@@ -9463,10 +9494,12 @@ function _afOpt_corrigerChevauchements() {
 // ══════════════════════════════════════════════════════════════════
 
 function _afOpt_resolveNavettes(unplanned, finalStates, dm, jour) {
-  if (!unplanned || !unplanned.length) return;
+  if (!unplanned || !unplanned.length) return [];
 
   console.log('[afOpt] resolveNavettes (mode sans navette) —',
     unplanned.length, 'flux non placés');
+
+  var _resolveFailures = [];
 
   // Sans navettes : tentative de placement en tournée solo de dernier recours
   var CAP = 33;
@@ -9531,8 +9564,10 @@ function _afOpt_resolveNavettes(unplanned, finalStates, dm, jour) {
           var curBest = _afOpt_findBestPermutation(curGroupe, dm, jour);
           if (curBest && curBest.duree > _DUREE_MAX_TOURNEE) curBest = null;
           if (!curBest) {
+            var _soloDiag = _afOpt_diagnoseFail(curGroupe, dm, jour);
             console.warn('[afOpt] resolveNavettes: flux solo non planifiable —',
-              seed.magasin, '/', grp.famille, '/', grp.entrepot);
+              seed.magasin, '/', grp.famille, '/', grp.entrepot, '— cause:', _soloDiag);
+            _resolveFailures.push({ magasins: seed.magasin, famille: grp.famille, entrepot: grp.entrepot, reason: _soloDiag });
             continue;
           }
           var ri = 0;
@@ -9586,20 +9621,24 @@ function _afOpt_resolveNavettes(unplanned, finalStates, dm, jour) {
             admDur:    tData ? parseFloat(tData[3]) || 15 : 15
           });
         } else {
+          var _failMags = item.groupe.flux.map(function(f) { return f.magasin; }).join(', ');
           console.warn('[afOpt] resolveNavettes: repli non plaçable —',
-            result.reason, grp.famille, grp.entrepot,
-            item.groupe.flux.map(function(f) { return f.magasin; }).join(', '));
+            result.reason, grp.famille, grp.entrepot, _failMags);
+          _resolveFailures.push({ magasins: _failMags, famille: grp.famille, entrepot: grp.entrepot, reason: result.reason });
         }
       });
     });
   });
+
+  return _resolveFailures;
 }
 
 // ══════════════════════════════════════════════════════════════════
 // FINALISATION
 // ══════════════════════════════════════════════════════════════════
 
-function _afOpt_finalizeAndRender(finalStates, dm, jour, nonPlaces, cancelled) {
+function _afOpt_finalizeAndRender(finalStates, dm, jour, nonPlaces, cancelled, resolveFailures) {
+  resolveFailures = resolveFailures || [];
   // Appliquer les états finaux dans AppState
   finalStates.forEach(function(ts) {
     if (!ts.tid) return;
@@ -9618,15 +9657,58 @@ function _afOpt_finalizeAndRender(finalStates, dm, jour, nonPlaces, cancelled) {
 
   _afOpt_hideOverlay();
 
+  // ── Rapport console ────────────────────────────────────────────
+  if ((nonPlaces && nonPlaces.length) || resolveFailures.length) {
+    console.group('[afOpt] Rapport des échecs');
+    if (nonPlaces && nonPlaces.length) {
+      var _byReason = {};
+      nonPlaces.forEach(function(np) {
+        var key = np.detail ? (np.reason + ' / ' + np.detail) : np.reason;
+        if (!_byReason[key]) _byReason[key] = [];
+        var mags = (np.groupe && np.groupe.flux)
+          ? np.groupe.flux.map(function(f) { return f.magasin; }).filter(function(v, i, a) { return a.indexOf(v) === i; }).join(', ')
+          : '?';
+        _byReason[key].push((np.groupe ? np.groupe.entrepot + ' → ' : '') + mags);
+      });
+      console.warn('Groupes non placés (' + nonPlaces.length + ') :');
+      Object.keys(_byReason).forEach(function(r) {
+        _byReason[r].forEach(function(s) { console.warn('  [' + r + '] ' + s); });
+      });
+    }
+    if (resolveFailures.length) {
+      console.warn('resolveNavettes — flux non résolus (' + resolveFailures.length + ') :');
+      resolveFailures.forEach(function(f) {
+        console.warn('  [' + f.reason + '] ' + f.entrepot + ' → ' + f.magasins + ' (' + f.famille + ')');
+      });
+    }
+    console.groupEnd();
+  }
+
+  // ── Message toast ──────────────────────────────────────────────
   var msg = cancelled
     ? '⚠️ Optimisation annulée — résultat partiel'
     : '✅ Optimisation terminée';
 
   if (nonPlaces && nonPlaces.length) {
-    msg += ' — ' + nonPlaces.length + ' groupe(s) non placé(s)';
+    var _causeCounts = {};
+    nonPlaces.forEach(function(np) {
+      var k = np.detail || np.reason;
+      _causeCounts[k] = (_causeCounts[k] || 0) + 1;
+    });
+    var _causeStr = Object.keys(_causeCounts).map(function(k) {
+      return _causeCounts[k] + '× ' + k;
+    }).join(', ');
+    msg += ' — ' + nonPlaces.length + ' groupe(s) non placé(s) : ' + _causeStr;
   }
 
-  if (typeof afficherToast === 'function') afficherToast(msg, cancelled ? 'avertissement' : 'succes');
+  if (resolveFailures.length) {
+    var _rfCounts = {};
+    resolveFailures.forEach(function(f) { _rfCounts[f.reason] = (_rfCounts[f.reason] || 0) + 1; });
+    var _rfStr = Object.keys(_rfCounts).map(function(k) { return _rfCounts[k] + '× ' + k; }).join(', ');
+    msg += ' | resolve: ' + resolveFailures.length + ' flux (' + _rfStr + ')';
+  }
+
+  if (typeof afficherToast === 'function') afficherToast(msg, (nonPlaces && nonPlaces.length) || resolveFailures.length ? 'avertissement' : (cancelled ? 'avertissement' : 'succes'));
   if (AppState.donnees) {
     rendrePlanningFlux(AppState.donnees);
     rendreGantt(AppState.donnees);
@@ -9746,7 +9828,7 @@ function autoFillOptimise() {
             // jour AppState.modules / _afOpt_storeSlots / les offsets, ce qui corrompt le
             // placement issu de la Phase 1. On finalise directement avec les tourStates Phase 1.
             _afOpt_updateProgress(0.90, 'Phase 3 — Résolution navettes…');
-            _afOpt_resolveNavettes(unplanned, tourStates, _opt_dm, _opt_jour);
+            var resolveFailures = _afOpt_resolveNavettes(unplanned, tourStates, _opt_dm, _opt_jour) || [];
             _afOpt_corrigerChevauchements();
             // Resynchroniser tourStates : finalizeAndRender réécrit AppState.modulesOffsets
             // depuis tourStates, qui avait été capturé avant la correction des chevauchements.
@@ -9758,7 +9840,7 @@ function autoFillOptimise() {
               }
             });
             _afOpt_updateProgress(1.00, 'Finalisation…');
-            _afOpt_finalizeAndRender(tourStates, _opt_dm, _opt_jour, groupesNonPlaces, _afOpt_cancelled);
+            _afOpt_finalizeAndRender(tourStates, _opt_dm, _opt_jour, groupesNonPlaces, _afOpt_cancelled, resolveFailures);
             return;
           }
 
@@ -9810,7 +9892,10 @@ function autoFillOptimise() {
       var g    = _opt_groupes[gi];
       var best = _afOpt_findBestPermutation(g, _opt_dm, _opt_jour);
       if (best) { g.best = best; _opt_groupesValides.push(g); }
-      else       { _opt_groupesInvalides.push({ groupe: g, reason: 'permutation_invalide' }); }
+      else {
+        var _diagDetail = _afOpt_diagnoseFail(g, _opt_dm, _opt_jour);
+        _opt_groupesInvalides.push({ groupe: g, reason: 'permutation_invalide', detail: _diagDetail });
+      }
 
       _afOpt_updateProgress(
         0.10 + 0.20 * ((gi + 1) / _opt_groupes.length),
@@ -12474,10 +12559,11 @@ function rendreGanttMagasins(data) {
            - (AppState.modulesOffsets[mod.id + '_' + b] || 6 * 60);
     });
     function byJour(j) {
+      if (!j) return [];
       return allSorted.filter(function(tid) {
         var t = getTourneeData(tid, data);
         if (!t) return false;
-        return !j || String(t[7] || '') === j;
+        return String(t[7] || '') === j;
       });
     }
     collectLivMod(mod, byJour(jour),     0);
