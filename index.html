@@ -277,12 +277,12 @@
     .gantt-echelle-heures { flex: 1; position: relative; overflow: visible; height: 24px; min-width: 0; }
     .gantt-heure-tick {
       position: absolute; top: 0; bottom: 0;
-      border-left: 1px dashed #CFD8DC;
-      font-size: 9px; color: #90A4AE;
+      border-left: 1px dashed #9E9E9E;
+      font-size: 9px; color: #212121;
       padding-left: 2px; padding-top: 4px; white-space: nowrap;
     }
-    .gantt-heure-tick.nuit { border-left-color: rgba(13,71,161,0.3); color: #B71C1C; }
-    .gantt-heure-tick.jour-sep { border-left: 2px solid #546E7A; color: #546E7A; font-weight: 700; z-index: 1; }
+    .gantt-heure-tick.nuit { border-left-color: rgba(13,71,161,0.4); color: #B71C1C; }
+    .gantt-heure-tick.jour-sep { border-left: 2px solid #E65100; color: #E65100; font-weight: 700; z-index: 1; }
 
     .gantt-ligne {
       display: flex; align-items: center;
@@ -1292,7 +1292,7 @@
       <button class="btn btn-secondary" onclick="changerZoom(+1)" title="Zoomer">+</button>
     </div>
     <div class="toolbar-group">
-    <button class="btn btn-primary"   onclick="autoFillOptimise()" title="Optimisation complète — heuristique + LNS 500 itérations (~30-60s)">🧠 Optimiser</button>
+    <button class="btn btn-primary"   onclick="autoFillOptimise()" title="Optimisation complète — heuristique + LNS 500 itérations (~30-60s)">🧠 Auto</button>
       <button class="btn btn-secondary" onclick="resetPlan()"        title="Réinitialiser tout le plan">♻️ Reset</button>
       <button class="btn btn-primary"   onclick="ajouterModule()"    title="Ajouter un nouveau module (chauffeur/tracteur)">+ Module</button>
       <button class="btn btn-primary"   onclick="ouvrirModalTournee()" title="Ajouter une tournée au module sélectionné">+ Tournée</button>
@@ -11167,6 +11167,147 @@ function exporterXLSX() {
 // EXPORT PDF — planning graphique paysage A3
 // ══════════════════════════════════════════════════════════════════════════
 
+// Génère l'image (canvas) de la courbe de charge UT par entrepôt.
+// Retourne { url, w, h } compatible avec _pdfImage(), ou null si pas de données.
+function _genererCourbeChargeImg() {
+  var bilan = AppState.bilanEntrepots;
+  if (!bilan) return null;
+
+  var epList = Object.keys(bilan).sort().filter(function(ep) {
+    return bilan[ep].events.some(function(e) { return e.type === 'chgt'; });
+  });
+  if (!epList.length) return null;
+
+  // Plage temporelle : 6h (360 min) → 30h (1800 min), pas 5 min → 289 points
+  var T_START = 360, T_END = 1800, T_STEP = 5;
+  var nPts = (T_END - T_START) / T_STEP + 1;
+
+  var COLORS = ['#E65100','#1565C0','#2E7D32','#6A1B9A','#AD1457','#00838F','#C62828','#F9A825','#37474F','#4E342E'];
+
+  // Calcul des points : UT actives à chaque pas de 15 min
+  var series = epList.map(function(ep, idx) {
+    var evts = bilan[ep].events.filter(function(e) { return e.type === 'chgt'; });
+    var pts = [];
+    for (var i = 0; i < nPts; i++) {
+      var t = T_START + i * T_STEP;
+      var ut = evts.reduce(function(s, e) {
+        return s + (e.debut <= t && t < e.fin ? (e.ut || 0) : 0);
+      }, 0);
+      pts.push({ t: t, ut: Math.round(ut * 10) / 10 });
+    }
+    return { ep: ep, pts: pts, color: COLORS[idx % COLORS.length] };
+  });
+
+  var maxUT = 1;
+  series.forEach(function(s) { s.pts.forEach(function(p) { if (p.ut > maxUT) maxUT = p.ut; }); });
+  maxUT = Math.ceil(maxUT / 10) * 10 || 10;
+
+  // Dimensions canvas
+  var cW = 1400;
+  var padL = 65, padR = 30, padT = 48, padB = 88;
+  var plotW = cW - padL - padR;
+  var plotH = 330;
+
+  // Pré-calcul du nombre de lignes de légende
+  var tmpCv = document.createElement('canvas');
+  tmpCv.width = cW; tmpCv.height = 1;
+  var tmpCtx = tmpCv.getContext('2d');
+  tmpCtx.font = '18px sans-serif';
+  var swatchW = 24, swatchGap = 10, itemPad = 36;
+  var legRows = 1, curX = padL;
+  epList.forEach(function(ep) {
+    var w = swatchW + swatchGap + tmpCtx.measureText(ep).width + itemPad;
+    if (curX + w > cW - padR && curX > padL) { legRows++; curX = padL; }
+    curX += w;
+  });
+
+  var cH = padT + plotH + padB + (legRows - 1) * 28;
+  var canvas = document.createElement('canvas');
+  canvas.width = cW; canvas.height = cH;
+  var ctx = canvas.getContext('2d');
+
+  // Fond blanc
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, cW, cH);
+
+  // Quadrillage horizontal + étiquettes Y
+  ctx.font = '18px sans-serif';
+  var nYLines = 5;
+  for (var i = 0; i <= nYLines; i++) {
+    var yv = Math.round(maxUT * i / nYLines);
+    var gy = padT + plotH - (yv / maxUT) * plotH;
+    ctx.strokeStyle = '#E8E8E8'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(padL + plotW, gy); ctx.stroke();
+    ctx.fillStyle = '#555'; ctx.textAlign = 'right';
+    ctx.fillText(yv, padL - 8, gy + 6);
+  }
+
+  // Quadrillage vertical + étiquettes X (toutes les 2h)
+  ctx.textAlign = 'center';
+  for (var h = 6; h <= 30; h += 2) {
+    var tx = padL + ((h * 60 - T_START) / (T_END - T_START)) * plotW;
+    ctx.strokeStyle = '#E8E8E8'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(tx, padT); ctx.lineTo(tx, padT + plotH); ctx.stroke();
+    var hMod = h % 24;
+    ctx.fillStyle = '#555'; ctx.font = '18px sans-serif';
+    ctx.fillText((hMod < 10 ? '0' : '') + hMod + 'h', tx, padT + plotH + 26);
+  }
+
+  // Repère minuit (24h = 1440 min)
+  var midX = padL + ((1440 - T_START) / (T_END - T_START)) * plotW;
+  ctx.strokeStyle = '#9575CD'; ctx.lineWidth = 2;
+  ctx.setLineDash([8, 4]);
+  ctx.beginPath(); ctx.moveTo(midX, padT - 14); ctx.lineTo(midX, padT + plotH); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#9575CD'; ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('Minuit', midX, padT - 18);
+
+  // Axes
+  ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH);
+  ctx.lineTo(padL + plotW, padT + plotH);
+  ctx.stroke();
+
+  // Libellé axe Y
+  ctx.save();
+  ctx.translate(18, padT + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = '#333'; ctx.font = 'bold 17px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('UT en chargement', 0, 0);
+  ctx.restore();
+
+  // Courbes : ligne + nuage de points
+  series.forEach(function(s) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    s.pts.forEach(function(p, i) {
+      var px = padL + ((p.t - T_START) / (T_END - T_START)) * plotW;
+      var py = padT + plotH - (p.ut / maxUT) * plotH;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+
+  });
+
+  // Légende
+  ctx.font = '18px sans-serif';
+  var legY = padT + plotH + 54;
+  var legCurX = padL;
+  series.forEach(function(s) {
+    var lblW = ctx.measureText(s.ep).width;
+    var itemW = swatchW + swatchGap + lblW + itemPad;
+    if (legCurX + itemW > cW - padR && legCurX > padL) { legCurX = padL; legY += 28; }
+    ctx.fillStyle = s.color;
+    ctx.fillRect(legCurX, legY - 14, swatchW, 16);
+    ctx.fillStyle = '#222'; ctx.textAlign = 'left';
+    ctx.fillText(s.ep, legCurX + swatchW + swatchGap, legY);
+    legCurX += itemW;
+  });
+
+  return { url: canvas.toDataURL('image/png'), w: cW, h: cH };
+}
+
 async function exporterPDF() {
   if (typeof html2canvas === 'undefined') {
     afficherToast('❌ html2canvas non disponible', 'erreur'); return;
@@ -11213,6 +11354,16 @@ async function exporterPDF() {
       _pdfBandeau(doc, mg, y, pW - 2 * mg, 'Bilan Remorques');
       y += 8;
       y = _pdfImage(doc, imgBilan, mg, y, pW - 2 * mg, Math.min((pH - mg * 2) * 0.48, pH - y - mg));
+      y += 3;
+    }
+
+    // Courbe de charge UT par entrepôt
+    var imgCharge = _genererCourbeChargeImg();
+    if (imgCharge) {
+      if (y + 60 > pH - mg) { doc.addPage(); y = mg; }
+      _pdfBandeau(doc, mg, y, pW - 2 * mg, 'Courbe de charge — UT en chargement par entrepôt');
+      y += 8;
+      y = _pdfImage(doc, imgCharge, mg, y, pW - 2 * mg, pH - y - mg);
       y += 3;
     }
 
@@ -12251,6 +12402,8 @@ function rendreGanttRemorques(data) {
         }
       }
     });
+
+    AppState.bilanEntrepots = bilanEntrepots; // accessible pour l'export PDF
 
     var epList = Object.keys(bilanEntrepots).sort();
     if (epList.length === 0) {
