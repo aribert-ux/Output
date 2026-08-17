@@ -1,0 +1,3 @@
+[submodule "Aide_outil_planification"]
+	path = Aide_outil_planification
+	url = https://github.com/aribert-ux/Aide_outil_planification.git
