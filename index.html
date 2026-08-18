@@ -1160,6 +1160,44 @@
     .val-rule-id { font-weight: 700; font-size: 11px; color: #455A64; }
     .val-rule-desc { font-size: 12px; color: #263238; margin: 1px 0; }
     .val-rule-detail { font-size: 11px; color: #78909C; }
+
+    /* ── Menu Réglages ── */
+    .reglages-wrapper { position: relative; display: inline-block; }
+    .reglages-menu {
+      position: absolute; top: calc(100% + 4px); right: 0; z-index: 2000;
+      background: #fff; border: 1px solid #CFD8DC; border-radius: 7px;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.16); padding: 12px 16px;
+      min-width: 300px;
+    }
+    .reglages-menu-title {
+      font-size: 10px; font-weight: 700; color: #607D8B;
+      text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;
+      padding-bottom: 6px; border-bottom: 1px solid #ECEFF1;
+    }
+    .reglages-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 0; cursor: pointer; user-select: none;
+    }
+    .reglages-item + .reglages-item { border-top: 1px solid #F5F7FA; }
+    .reglages-pill {
+      flex-shrink: 0; width: 34px; height: 18px; border-radius: 9px;
+      background: #CFD8DC; position: relative; transition: background .2s; cursor: pointer;
+    }
+    .reglages-pill::after {
+      content: ''; position: absolute; width: 14px; height: 14px; border-radius: 50%;
+      background: #fff; top: 2px; left: 2px; transition: left .2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.22);
+    }
+    .reglages-pill.active { background: #00838F; }
+    .reglages-pill.active::after { left: 18px; }
+    .reglages-label { font-size: 11px; color: #37474F; line-height: 1.35; }
+    /* Nom magasin débordant */
+    .flux-block--overflow { overflow: visible !important; z-index: 15 !important; }
+    .flux-block--overflow .pfp-block-name {
+      overflow: visible !important; text-overflow: clip !important;
+      background: rgba(25, 25, 25, 0.72); border-radius: 0 3px 3px 0;
+      padding: 1px 5px 1px 3px;
+    }
   </style>
   <!-- SheetJS — lecture du fichier Excel dans le navigateur, sans serveur -->
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
@@ -1275,6 +1313,20 @@
       <button class="btn btn-secondary" onclick="ouvrirModalFluxManuel()" title="Créer un flux de récupération d'emballages (0 UT) ou un flux manuel vers un magasin">🔄 Flux manuel</button>
       <a class="btn btn-secondary" href="https://distancierinteractif-aakqowxsbgejq5w22rkvcz.streamlit.app/" target="_blank" rel="noopener">🗺 Distancier interactif</a>
       <a class="btn btn-secondary" href="https://aribert-ux.github.io/Aide_outil_planification/" target="_blank" rel="noopener">Aide</a>
+      <div class="reglages-wrapper" id="reglages-wrapper">
+        <button class="btn btn-secondary" id="btn-reglages" onclick="toggleReglagesMenu(event)" title="Réglages d'affichage">⚙ Réglages</button>
+        <div class="reglages-menu" id="reglages-menu" style="display:none">
+          <div class="reglages-menu-title">Onglet Flux</div>
+          <label class="reglages-item" onclick="toggleReglage('decouperZoom')">
+            <span class="reglages-pill" id="pill-decouperZoom"></span>
+            <span class="reglages-label">Découpler le zoom atelier / planning des flux</span>
+          </label>
+          <label class="reglages-item" onclick="toggleReglage('nomMagasinComplet')">
+            <span class="reglages-pill" id="pill-nomMagasinComplet"></span>
+            <span class="reglages-label">Afficher le nom du magasin en entier (débordement du bloc)</span>
+          </label>
+        </div>
+      </div>
     </div>
   </div>
   <!-- ── Actions (droite) ── -->
@@ -1846,6 +1898,48 @@ function chargerDistancier() {
 
 // ══════════════════════════════════════════════════════
 //  CARTOGRAPHIE RÉCEPTION MAGASINS (CSV)
+// ── Réglages utilisateur (localStorage) ──────────────────
+var LS_REGLAGES_KEY = 'outil_v7_reglages';
+var AppReglages = { decouperZoom: false, nomMagasinComplet: false };
+
+function sauvegarderReglages() {
+  try { localStorage.setItem(LS_REGLAGES_KEY, JSON.stringify(AppReglages)); } catch(e) {}
+}
+
+function restaurerReglages() {
+  try {
+    var raw = localStorage.getItem(LS_REGLAGES_KEY);
+    if (raw) {
+      var data = JSON.parse(raw);
+      if (data && typeof data === 'object') {
+        AppReglages.decouperZoom      = !!data.decouperZoom;
+        AppReglages.nomMagasinComplet = !!data.nomMagasinComplet;
+      }
+    }
+  } catch(e) {}
+  appliquerReglagesUI();
+}
+
+function appliquerReglagesUI() {
+  ['decouperZoom', 'nomMagasinComplet'].forEach(function(key) {
+    var pill = document.getElementById('pill-' + key);
+    if (pill) pill.classList.toggle('active', !!AppReglages[key]);
+  });
+}
+
+function toggleReglagesMenu(e) {
+  e.stopPropagation();
+  var menu = document.getElementById('reglages-menu');
+  if (menu) menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+}
+
+function toggleReglage(key) {
+  AppReglages[key] = !AppReglages[key];
+  appliquerReglagesUI();
+  sauvegarderReglages();
+  if (AppState.donnees) rendrePlanningFlux(AppState.donnees);
+}
+
 // ══════════════════════════════════════════════════════
 var LS_CARTO_KEY = 'outil_v7_cartographie';
 
@@ -4116,7 +4210,7 @@ function rendrePlanningFlux(data) {
   }
 
   var TIMELINE_END   = 30 * 60; // 1800 min (6h lendemain)
-  var PPM = AppState.PPM || 2;
+  var PPM = (AppReglages.decouperZoom ? ZOOM_LEVELS[0] : AppState.PPM) || 2;
 
   var placed = [], unplaced = [];
 
@@ -4339,7 +4433,7 @@ function rendrePlanningFlux(data) {
     var top = b._row * ROW_H + 4;
 
     var el = document.createElement('div');
-    el.className = 'flux-block' + (b.utAff > 0 ? ' flux-block-partiel' : '');
+    el.className = 'flux-block' + (b.utAff > 0 ? ' flux-block-partiel' : '') + (AppReglages.nomMagasinComplet ? ' flux-block--overflow' : '');
     if (f._isFluxManuel) el.classList.add('flux-block-manuel');
     el.style.left = xClamped + 'px';
     el.style.width = wClamped + 'px';
@@ -4348,7 +4442,7 @@ function rendrePlanningFlux(data) {
 
     var utRestant = Math.round((f.ut - b.utAff) * 10) / 10;
     var utLabel = f._isFluxVide ? 'EMB' : (b.utAff > 0 ? utRestant + ' UT' : f.ut + ' UT');
-    var nomLabel = f.magasin.length > 14 ? f.magasin.substring(0, 13) + '…' : f.magasin;
+    var nomLabel = AppReglages.nomMagasinComplet ? f.magasin : (f.magasin.length > 14 ? f.magasin.substring(0, 13) + '…' : f.magasin);
     nomLabel += f._isFluxVide ? '' : (' · ' + f.marchandise);
     if (f._isFluxManuel) {
       var badgeManuel = document.createElement('span');
@@ -13318,7 +13412,17 @@ function afficherToast(message, type) {
 document.addEventListener('DOMContentLoaded', function() {
   restaurerDistancier();
   restaurerCartographie();
+  restaurerReglages();
   verifierAutoSave();
+
+  // Fermer le menu Réglages au clic en dehors
+  document.addEventListener('click', function(e) {
+    var wrapper = document.getElementById('reglages-wrapper');
+    var menu = document.getElementById('reglages-menu');
+    if (menu && wrapper && !wrapper.contains(e.target)) {
+      menu.style.display = 'none';
+    }
+  });
 
   // Sync jour dans modal
   var selJour  = document.getElementById('sel-jour');
