@@ -4251,7 +4251,14 @@ function rendrePlanningFlux(data) {
       if (f.ut > 0 && utAff >= f.ut - 0.01) return;
     }
 
-    var travelMin = distMap[f.entrepot + '_' + f.magasin];
+    var _dk = f.entrepot + '_' + f.magasin;
+    var _dkR = f.magasin + '_' + f.entrepot;
+    var _dkL = (f.entrepot || '').toLowerCase() + '_' + (f.magasin || '').toLowerCase();
+    var _dkRL = (f.magasin || '').toLowerCase() + '_' + (f.entrepot || '').toLowerCase();
+    var travelMin = distMap[_dk] != null ? distMap[_dk]
+                  : distMap[_dkL] != null ? distMap[_dkL]
+                  : distMap[_dkR] != null ? distMap[_dkR]
+                  : distMap[_dkRL];
     var _slots = tousCreneaux(f.magasin, f.marchandise);
 
     if (travelMin == null || !_slots.length) {
