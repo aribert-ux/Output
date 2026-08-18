@@ -4306,7 +4306,7 @@ function rendrePlanningFlux(data) {
     if (!estComplete) unplaced.push({ flux: nav, utAff: 0, isNavette: true });
   });
 
-  // 4 — Tri + empaquetage groupé par zone entrepôt, blocs les plus courts en premier
+  // 4 — Groupement par zone entrepôt, sous-groupement par zone livraison, bin-packing séparé par sous-groupe
   var zonesMap = {};
   placed.forEach(function(b) {
     var z = b.flux.zoneEntrepot || getZoneEntrepot(b.flux.entrepot) || '—';
@@ -4317,24 +4317,37 @@ function rendrePlanningFlux(data) {
 
   var rows = [];
   var rowOffset = 0;
+  var sectionHeaders = []; // { label, zoneEntrepot, firstRow, rowCount }
   zoneKeys.forEach(function(z) {
     var group = zonesMap[z];
-    // Blocs les plus courts en haut ; à durée égale, les plus tôt d'abord
-    group.sort(function(a, b) {
-      return a.dur !== b.dur ? a.dur - b.dur : a.blockStart - b.blockStart;
-    });
-    var localRows = [];
+    // Sous-groupement par zone livraison (ordre alpha)
+    var zoneLivMap = {};
     group.forEach(function(b) {
-      var ri = -1;
-      for (var r = 0; r < localRows.length; r++) {
-        if (b.blockStart >= localRows[r].lastEnd) { ri = r; break; }
-      }
-      if (ri < 0) { ri = localRows.length; localRows.push({ lastEnd: -Infinity }); }
-      b._row = rowOffset + ri;
-      localRows[ri].lastEnd = b.blockEnd;
+      var zl = b.flux.zoneLivraison || '—';
+      if (!zoneLivMap[zl]) zoneLivMap[zl] = [];
+      zoneLivMap[zl].push(b);
     });
-    rowOffset += localRows.length;
-    rows = rows.concat(localRows);
+    var zlKeys = Object.keys(zoneLivMap).sort(function(a, b) {
+      return a.toLowerCase() < b.toLowerCase() ? -1 : 1;
+    });
+    zlKeys.forEach(function(zl) {
+      var subGroup = zoneLivMap[zl];
+      subGroup.sort(function(a, b) { return a.blockStart - b.blockStart; });
+      var firstRow = rowOffset;
+      var localRows = [];
+      subGroup.forEach(function(b) {
+        var ri = -1;
+        for (var r = 0; r < localRows.length; r++) {
+          if (b.blockStart >= localRows[r].lastEnd) { ri = r; break; }
+        }
+        if (ri < 0) { ri = localRows.length; localRows.push({ lastEnd: -Infinity }); }
+        b._row = rowOffset + ri;
+        localRows[ri].lastEnd = b.blockEnd;
+      });
+      rowOffset += localRows.length;
+      rows = rows.concat(localRows);
+      sectionHeaders.push({ label: zl, zoneEntrepot: z, firstRow: firstRow, rowCount: localRows.length });
+    });
   });
 
   // 5 — Rendu (axe calé sur debutH=0/finH=34, même référentiel que le gantt modules)
@@ -4380,6 +4393,29 @@ function rendrePlanningFlux(data) {
       'border-bottom:1px solid #ECEFF1;background:' + (r2 % 2 === 0 ? '#F8FAFC' : '#ffffff') + ';';
     rowsEl.appendChild(rowBg);
   }
+
+  // Labels zone livraison dans la colonne gauche + séparateurs entre sous-groupes
+  sectionHeaders.forEach(function(sh, idx) {
+    var y = sh.firstRow * ROW_H;
+    var h = sh.rowCount * ROW_H;
+    var colBorder = getCouleurZone(sh.zoneEntrepot);
+    var band = document.createElement('div');
+    band.style.cssText = 'position:absolute;left:0;top:' + y + 'px;width:' + LABEL_W + 'px;height:' + h + 'px;' +
+      'border-right:3px solid ' + colBorder + ';border-bottom:1px solid rgba(0,0,0,0.08);' +
+      'display:flex;align-items:center;padding:0 8px;box-sizing:border-box;overflow:hidden;z-index:2;pointer-events:none;';
+    var lbl = document.createElement('span');
+    lbl.style.cssText = 'font-size:10px;font-weight:700;color:#455A64;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:' + (LABEL_W - 20) + 'px;';
+    lbl.textContent = sh.label;
+    lbl.title = sh.label;
+    band.appendChild(lbl);
+    rowsEl.appendChild(band);
+    // Séparateur horizontal entre sous-groupes (sauf tout premier)
+    if (idx > 0) {
+      var sep = document.createElement('div');
+      sep.style.cssText = 'position:absolute;left:0;top:' + y + 'px;width:100%;height:1px;background:rgba(0,0,0,0.12);z-index:3;pointer-events:none;';
+      rowsEl.appendChild(sep);
+    }
+  });
 
   // Grille verticale — même positions que les ticks de l'axe (chaque heure)
   for (var h2 = DEBUT_H; h2 <= FIN_H; h2++) {
