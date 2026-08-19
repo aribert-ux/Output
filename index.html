@@ -716,6 +716,34 @@
       );
       opacity: 0.8;
     }
+    .tour-seg-transfer {
+      background: repeating-linear-gradient(
+        90deg, #FFF9C4 0px, #FFF9C4 5px, #F9A825 5px, #F9A825 7px
+      );
+      opacity: 0.9;
+      font-size: 9px !important;
+      color: #E65100;
+      font-weight: 700;
+      cursor: default !important;
+    }
+    .chgt-swap-btn {
+      position: absolute;
+      z-index: 20;
+      padding: 0 5px;
+      font-size: 11px;
+      line-height: 16px;
+      height: 16px;
+      background: rgba(227,242,253,0.93);
+      border: 1px solid #90CAF9;
+      border-radius: 3px;
+      cursor: pointer;
+      white-space: nowrap;
+      top: 1px;
+      color: #1565C0;
+      font-weight: 700;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.18);
+    }
+    .chgt-swap-btn:hover { background: #BBDEFB; }
     /* Pause chauffeur placée dans le blanc inter-tournées */
     .gap-pause-block {
       position: absolute;
@@ -830,6 +858,20 @@
       background: #fff; border: 1px solid #E0E0E0;
     }
     .pt-card:last-child { margin-bottom: 8px; }
+    .pt-reprise-row input[type=range] {
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: 4px; border-radius: 2px;
+      background: #CFD8DC; outline: none; cursor: pointer;
+    }
+    .pt-reprise-row input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+      background: #37474F; cursor: pointer; border: 2px solid #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+    }
+    .pt-reprise-row input[type=range]::-moz-range-thumb {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #37474F; cursor: pointer; border: 2px solid #fff;
+    }
 
     /* ── Barre composition remorque (mini) ── */
     .compo-bar {
@@ -1825,6 +1867,29 @@
   </div>
 </div>
 
+<!-- ══ MODAL CISEAUX — ENTREPÔT DE CHANGEMENT DE CHAUFFEUR ══ -->
+<div class="modal-overlay" id="modal-cisaille" onclick="if(event.target===this)fermerModal('modal-cisaille')">
+  <div class="modal" style="width:380px">
+    <div class="modal-header">
+      ✂ Changement de chauffeur
+      <span class="vp-close" onclick="fermerModal('modal-cisaille')">✕</span>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Entrepôt de relève</label>
+        <select id="cisaille-entrepot" class="form-control"></select>
+        <div style="font-size:11px;color:#78909C;margin-top:4px">
+          Par défaut : entrepôt de départ du shift courant.
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="fermerModal('modal-cisaille')">Annuler</button>
+      <button class="btn btn-primary" onclick="_confirmerCisaille()">✂ Activer l'outil</button>
+    </div>
+  </div>
+</div>
+
 <!-- ══ MODAL DÉTAIL TOURNÉE ══ -->
 <div class="modal-overlay" id="modal-detail-tournee">
   <div class="modal" style="width:680px;max-width:98vw">
@@ -2124,15 +2189,7 @@ function lireOngletBrut(wb, nom) {
 }
 function lireDistancierWb(wb) {
   var list = (AppState.distancierParsed || []).slice();
-  // ENT IENA dans le distancier = ENT IENA1 et ENT IENA2 dans les flux
-  var IENA_ALIASES = ['ENT IENA1', 'ENT IENA2'];
   var toAdd = [];
-  list.forEach(function(e) {
-    IENA_ALIASES.forEach(function(alias) {
-      if (e.f === 'ENT IENA') toAdd.push({ f: alias, t: e.t, km: e.km, m: e.m });
-      if (e.t === 'ENT IENA') toAdd.push({ f: e.f, t: alias, km: e.km, m: e.m });
-    });
-  });
   toAdd.forEach(function(entry) {
     if (!list.some(function(e) { return e.f === entry.f && e.t === entry.t; }))
       list.push(entry);
@@ -2571,6 +2628,8 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
               color:'#37474F', entrepot:_csT.entrepot, _isChauffeurSplit:true, _splitId:_csT._id });
             curseur += 15;
             driveMin = 0; serviceMin = 0; pauseServiceFaite = false; bonusPauseCondUsed = false;
+            // Délai de reprise : attente du 2ᵉ chauffeur (blanc)
+            if (_csT.repriseMin != null && _csT.repriseMin > curseur) { curseur = _csT.repriseMin; }
             _lieuPrecT = _csT.entrepot;
             trajRestant = getDist(_csT.entrepot, lieu).m;
             continue;
@@ -2671,6 +2730,8 @@ function calculerPlanningGantt(debutMin, arretsInput, distMap, reglesDech, retou
               color:'#37474F', entrepot:_csR.entrepot, _isChauffeurSplit:true, _splitId:_csR._id });
             curseur += 15;
             driveMin = 0; serviceMin = 0; pauseServiceFaite = false; bonusPauseCondUsed = false;
+            // Délai de reprise : attente du 2ᵉ chauffeur (blanc)
+            if (_csR.repriseMin != null && _csR.repriseMin > curseur) { curseur = _csR.repriseMin; }
             _lieuPrecR = _csR.entrepot;
             retRestant = getDist(_csR.entrepot, effectiveRetour).m;
             continue;
@@ -3116,7 +3177,8 @@ var AppState = {
   shiftSplits:         {},  // { modId: [tid_apres_lequel_couper, ...] }
   pauseOverrides:      {},  // { 'modId_tid': [{ at: minAbs, type: 'conduite'|'service' }] }
   _pauseDragState:     null, // drag d'un bloc pause_chauffeur
-  _chgtDragState:      null, // drag du bloc chargement PGC/NAL dans le Gantt Remorques
+  _chgtDragState:      null, // drag d'un bloc de chargement (individuel) dans le Gantt Remorques
+  _transferDragState:  null, // drag du bloc de délai de route (15min) dans le Gantt Remorques
   _dragNavetteSrc:     null, // navette en cours de glisser-déposer pour fusion {_navetteId, entrepot, magasin}
   navettesLibres:      [],  // navettes créées manuellement [{_navetteId, entrepot, magasin, ut, zoneEntrepot, isNavette, ?_navFluxId}]
   fluxNavettes:        [],  // registre navettisations [{_navFluxId, _navetteId, magasin, marchandise, entrepotOrigine, entrepotRelay, utNavette, jour}]
@@ -3127,7 +3189,8 @@ var AppState = {
     magasins: null      // null = pas de filtre ; [] = aucun magasin sélectionné ; [...] = filtre actif
   },
   chauffeurSplits: {},  // { 'M1_T1': [{atMin, entrepot}] } — coupures chauffeur intra-tournée
-  _cisailleMode:   false, // outil ciseaux actif
+  _cisailleMode:    false, // outil ciseaux actif
+  _cisailleEntrepot: null, // entrepôt choisi pour la relève (null = entrepôt du shift)
   parallelBreakConvert: {}  // { 'modId_tid': { '<insertionTime>': 'amont'|'aval' } } — conversion pauses parallèles en blocs séquentiels
 };
 var _navFluxPending = null; // flux en attente de confirmation dans modal-navette-flux
@@ -3510,6 +3573,84 @@ function afficherPanelTournees(modId) {
       });
       card.appendChild(fusRow);
     });
+
+    // ── Délai de reprise (changement de chauffeur en cours de tournée) ──
+    var _csSplitsPanel = (AppState.chauffeurSplits[modId + '_' + tid] || []);
+    if (_csSplitsPanel.length > 0) {
+      var _cs = _csSplitsPanel[0];
+      var _sliderMin  = _cs._splitBlocEnd != null ? _cs._splitBlocEnd : (_cs.atMin + 15);
+      var _repriseMin = _cs.repriseMin != null ? Math.max(_cs.repriseMin, _sliderMin) : _sliderMin;
+      var _sliderMax  = _sliderMin + 480; // fenêtre 8h
+
+      var repriseRow = document.createElement('div');
+      repriseRow.className = 'pt-reprise-row';
+      repriseRow.style.cssText = 'margin-bottom:6px;padding:5px 6px;background:#ECEFF1;border-radius:4px;border:1px solid #CFD8DC';
+
+      // Ligne titre
+      var reprTitleRow = document.createElement('div');
+      reprTitleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:4px';
+      var reprTitleL = document.createElement('span');
+      reprTitleL.style.cssText = 'font-size:10px;font-weight:700;color:#37474F';
+      reprTitleL.textContent = '✂ Reprise 2ᵉ chauffeur';
+      var reprHeure = document.createElement('span');
+      reprHeure.style.cssText = 'font-size:11px;font-weight:700;color:' + (_cs.repriseMin != null ? '#37474F' : '#90A4AE');
+      reprHeure.id = 'repr-heure-' + modId + '-' + tid;
+      reprHeure.textContent = _cs.repriseMin != null ? minutesVersHeure(_repriseMin) : 'Aucun délai';
+
+      var reprBtnReset = document.createElement('button');
+      reprBtnReset.title = 'Supprimer le délai de reprise';
+      reprBtnReset.style.cssText = 'font-size:10px;padding:0 4px;border:1px solid #CFD8DC;border-radius:3px;background:#fff;cursor:pointer;color:#78909C;line-height:16px;display:' + (_cs.repriseMin != null ? 'block' : 'none');
+      reprBtnReset.id = 'repr-reset-' + modId + '-' + tid;
+      reprBtnReset.textContent = '×';
+      (function(mId, tId) {
+        reprBtnReset.addEventListener('click', function() { setChauffeurReprise(mId, tId, null); });
+      })(modId, tid);
+      reprTitleRow.appendChild(reprTitleL);
+      var reprTitleR = document.createElement('div');
+      reprTitleR.style.cssText = 'display:flex;align-items:center;gap:4px';
+      reprTitleR.appendChild(reprHeure);
+      reprTitleR.appendChild(reprBtnReset);
+      reprTitleRow.appendChild(reprTitleR);
+      repriseRow.appendChild(reprTitleRow);
+
+      // Slider
+      var slider = document.createElement('input');
+      slider.type  = 'range';
+      slider.min   = _sliderMin;
+      slider.max   = _sliderMax;
+      slider.step  = 5;
+      slider.value = _repriseMin;
+      slider.style.cssText = 'width:100%;margin:0 0 3px 0;display:block';
+      (function(mId, tId, hEl, btnEl) {
+        slider.addEventListener('input', function() {
+          var v = +this.value;
+          hEl.style.color = '#37474F';
+          hEl.textContent = minutesVersHeure(v);
+          btnEl.style.display = 'block';
+        });
+        slider.addEventListener('change', function() {
+          setChauffeurReprise(mId, tId, +this.value);
+        });
+      })(modId, tid, reprHeure, reprBtnReset);
+      repriseRow.appendChild(slider);
+
+      // Légende min/max
+      var reprLegend = document.createElement('div');
+      reprLegend.style.cssText = 'display:flex;justify-content:space-between;font-size:9px;color:#90A4AE';
+      var lMin = document.createElement('span');
+      lMin.textContent = minutesVersHeure(_sliderMin) + ' (direct)';
+      var lInfo = document.createElement('span');
+      lInfo.style.cssText = 'font-style:italic';
+      lInfo.textContent = '✂ ~ ' + minutesVersHeure(_cs.atMin) + ' @ ' + _cs.entrepot;
+      var lMax = document.createElement('span');
+      lMax.textContent = minutesVersHeure(_sliderMax);
+      reprLegend.appendChild(lMin);
+      reprLegend.appendChild(lInfo);
+      reprLegend.appendChild(lMax);
+      repriseRow.appendChild(reprLegend);
+
+      card.appendChild(repriseRow);
+    }
 
     // ── Barre de composition (même code couleur que le Gantt) ──────────
     var capOuter = document.createElement('div');
@@ -4183,7 +4324,6 @@ function rendrePlanningFlux(data) {
   var cartoPlag = AppState.cartographiePlages || {};
   var jourNom   = AppState.jourActif; // ex: "Lundi"
 
-  // Utiliser lireDistancierWb() pour bénéficier des alias (ENT IENA1/2, etc.)
   var distMap = {};
   lireDistancierWb().forEach(function(d) { distMap[d.f + '_' + d.t] = d.m; });
 
@@ -5854,15 +5994,40 @@ function utTotal(tid) {
 // ══════════════════════════════════════════════════════
 
 function toggleCisailleMode() {
-  AppState._cisailleMode = !AppState._cisailleMode;
-  var btn = document.getElementById('btn-cisaille');
-  if (AppState._cisailleMode) {
-    document.body.classList.add('cisaille-actif');
-    if (btn) { btn.classList.remove('btn-secondary'); btn.classList.add('btn-primary'); }
+  if (!AppState._cisailleMode) {
+    // Activation : ouvrir le modal de choix d'entrepôt
+    _ouvrirModalCisaille();
   } else {
-    document.body.classList.remove('cisaille-actif');
-    if (btn) { btn.classList.remove('btn-primary'); btn.classList.add('btn-secondary'); }
+    // Désactivation directe
+    _desactiverCisaille();
   }
+}
+
+function _desactiverCisaille() {
+  AppState._cisailleMode    = false;
+  AppState._cisailleEntrepot = null;
+  document.body.classList.remove('cisaille-actif');
+  var btn = document.getElementById('btn-cisaille');
+  if (btn) { btn.classList.remove('btn-primary'); btn.classList.add('btn-secondary'); }
+}
+
+function _ouvrirModalCisaille() {
+  var entrepots = _getEntrepotsConnus();
+  var sel = document.getElementById('cisaille-entrepot');
+  sel.innerHTML = '<option value="">(Entrepôt de départ du shift — par défaut)</option>'
+    + entrepots.map(function(e) { return '<option value="' + e + '">' + e + '</option>'; }).join('');
+  sel.value = '';
+  document.getElementById('modal-cisaille').classList.add('visible');
+}
+
+function _confirmerCisaille() {
+  var sel = document.getElementById('cisaille-entrepot');
+  AppState._cisailleEntrepot = sel.value || null; // null = entrepôt du shift courant
+  fermerModal('modal-cisaille');
+  AppState._cisailleMode = true;
+  document.body.classList.add('cisaille-actif');
+  var btn = document.getElementById('btn-cisaille');
+  if (btn) { btn.classList.remove('btn-secondary'); btn.classList.add('btn-primary'); }
 }
 
 // Retourne l'entrepôt de départ du shift contenant tid (en remontant jusqu'au début du shift courant).
@@ -5897,7 +6062,7 @@ function _onCisailleClick(segEl, e) {
   var blocDebut = +(segEl.getAttribute('data-bloc-debut') || 0);
   var blocDuree = +(segEl.getAttribute('data-bloc-duree') || 0);
   if (!tid || !modId || blocDuree <= 0) return;
-  var entrepot = _getShiftEntrepot(modId, tid);
+  var entrepot = AppState._cisailleEntrepot || _getShiftEntrepot(modId, tid);
   var track    = segEl.closest('.mod-track');
   if (!track) return;
   var trackRect = track.getBoundingClientRect();
@@ -5905,7 +6070,7 @@ function _onCisailleClick(segEl, e) {
   var clickMin  = Math.round(clickX / AppState.PPM / 5) * 5;
   clickMin = Math.max(blocDebut + 5, Math.min(blocDebut + blocDuree - 5, clickMin));
   _inserterChangementChauffeur(modId, tid, clickMin, entrepot);
-  toggleCisailleMode(); // désactivation automatique après insertion
+  _desactiverCisaille(); // désactivation automatique après insertion
 }
 
 function _inserterChangementChauffeur(modId, tid, atMin, entrepot) {
@@ -5922,6 +6087,16 @@ function _supprimerChangementChauffeur(modId, tid, splitId) {
     return cs._id !== splitId;
   });
   if (AppState.donnees) rendreGantt(AppState.donnees);
+  afficherPanelTournees(_moduleSelectionne);
+}
+
+function setChauffeurReprise(modId, tid, repriseMin) {
+  var key  = modId + '_' + tid;
+  var arr  = AppState.chauffeurSplits[key];
+  if (!arr || !arr.length) return;
+  arr[0].repriseMin = repriseMin; // null = pas de délai
+  if (AppState.donnees) rendreGantt(AppState.donnees);
+  afficherPanelTournees(_moduleSelectionne);
 }
 
 function calculerShifts(mod, toursOrdonnes, blocsMap, splits) {
@@ -6667,6 +6842,16 @@ function rendreGantt(data) {
       if (isSplitPoint) { driverDrive = 0; driverService = 0; driverPSF = false; driverBCU = false; }
       prevWasSplit = isSplitPoint;
       blocsMap[tid] = blocs;
+      // Mémoriser l'heure réelle de fin du bloc changement_chauffeur pour le slider reprise
+      var _csKeyGantt = mod.id + '_' + tid;
+      var _csSplitsCached = AppState.chauffeurSplits[_csKeyGantt];
+      if (_csSplitsCached && _csSplitsCached.length) {
+        blocs.forEach(function(b) {
+          if (b._isChauffeurSplit && b._splitId === _csSplitsCached[0]._id) {
+            _csSplitsCached[0]._splitBlocEnd = b.debut + b.duree;
+          }
+        });
+      }
       prevBlocsEnd = blocs.length > 0
         ? blocs[blocs.length-1].debut + blocs[blocs.length-1].duree
         : tractorRouteStart;
@@ -12050,6 +12235,74 @@ function retirerAssignationRemorque(tid) {
 
 // ── Gantt Remorques — helpers chargement ──
 
+var TRANSFER_DELAY_MULTI_ENT = 15; // délai de transfert entre entrepôts de même zone (min)
+
+// Retourne les entrepôts distincts d'une tournée dans l'ordre de chargement.
+// Si les entrepôts ne sont pas dans la même zone, seul le premier est retenu.
+// L'ordre peut être overridé via ov.chgtEntrepotsOrder.
+function _getEntrepotsOrdonnesTour(tid, flux, ov) {
+  var seen = [], order = [];
+  flux.forEach(function(f) {
+    if (f.entrepot && seen.indexOf(f.entrepot) < 0) { seen.push(f.entrepot); order.push(f.entrepot); }
+  });
+  if (order.length <= 1) return order;
+  for (var i = 1; i < order.length; i++) {
+    if (!memeZoneEntrepot(order[0], order[i])) return order.slice(0, 1);
+  }
+  var ovOrder = ov && ov.chgtEntrepotsOrder;
+  if (ovOrder && ovOrder.length === order.length && ovOrder.every(function(e) { return order.indexOf(e) >= 0; })) {
+    return ovOrder.slice();
+  }
+  return order;
+}
+
+// Calcule les blocs de chargement (un par entrepôt distinct) et N-1 blocs de transfert.
+// Retourne { blocks, transferBlocks, transferBlock(compat), totalChgtDur, barLeft, tractorChgtEnd, isMulti, nBlocks }
+// ov.chgtBlockStarts : tableau de positions individuelles par bloc
+// ov.transferStarts  : tableau de positions individuelles par bloc de transfert (index 0..N-2)
+// ov.transferStart   : legacy scalaire (compatible, migré vers transferStarts[0])
+function _buildChgtBlocksForTour(tid, flux, ov, offset, chgtDur, hasFrais) {
+  var entrepots = _getEntrepotsOrdonnesTour(tid, flux, ov);
+  var n = entrepots.length;
+  var DELAY = n > 1 ? TRANSFER_DELAY_MULTI_ENT : 0;
+  var totalChgtDur = n * chgtDur + (n - 1) * DELAY;
+  var blocks = [];
+  var blockStarts = ov.chgtBlockStarts;
+  if (blockStarts && blockStarts.length === n) {
+    entrepots.forEach(function(ep, i) {
+      var s = blockStarts[i];
+      blocks.push({ entrepot: ep, debutChgt: s, finChgt: s + chgtDur, chgtDur: chgtDur });
+    });
+  } else {
+    var barLeft0 = ov.chgtOffset != null ? ov.chgtOffset : (hasFrais ? offset : Math.max(0, offset - totalChgtDur));
+    var cur = barLeft0;
+    entrepots.forEach(function(ep) {
+      blocks.push({ entrepot: ep, debutChgt: cur, finChgt: cur + chgtDur, chgtDur: chgtDur });
+      cur += chgtDur + DELAY;
+    });
+  }
+  // N-1 blocs de transfert inter-entrepôts (un entre chaque paire consécutive)
+  var transferBlocks = [];
+  if (n > 1) {
+    // Support ov.transferStarts[] et ov.transferStart (legacy scalaire pour l'index 0)
+    var ovStarts = ov.transferStarts;
+    if (!ovStarts && ov.transferStart != null) ovStarts = [ov.transferStart];
+    for (var ti = 0; ti < n - 1; ti++) {
+      var defStart = blocks[ti].finChgt;
+      var tStart = (ovStarts && ovStarts[ti] != null) ? ovStarts[ti] : defStart;
+      transferBlocks.push({ debutChgt: tStart, finChgt: tStart + TRANSFER_DELAY_MULTI_ENT, duree: TRANSFER_DELAY_MULTI_ENT, idx: ti });
+    }
+  }
+  var allStarts = blocks.map(function(b) { return b.debutChgt; });
+  transferBlocks.forEach(function(tb) { allStarts.push(tb.debutChgt); });
+  var barLeft = allStarts.length > 0 ? Math.min.apply(null, allStarts) : (hasFrais ? offset : Math.max(0, offset - totalChgtDur));
+  var allEnds = blocks.map(function(b) { return b.finChgt; });
+  transferBlocks.forEach(function(tb) { allEnds.push(tb.finChgt); });
+  var tractorChgtEnd = allEnds.length > 0 ? Math.max.apply(null, allEnds) : (hasFrais ? offset : Math.max(0, offset - totalChgtDur));
+  return { blocks: blocks, transferBlocks: transferBlocks, transferBlock: transferBlocks[0] || null,
+           totalChgtDur: totalChgtDur, barLeft: barLeft, tractorChgtEnd: tractorChgtEnd, isMulti: n > 1, nBlocks: n };
+}
+
 function _computeChargementDebut(tid) {
   var modId = null;
   AppState.modules.forEach(function(m) {
@@ -12062,7 +12315,8 @@ function _computeChargementDebut(tid) {
   var flux = AppState.planLocal[tid] || [];
   var hasFrais = flux.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase()) >= 0; });
   if (ov.chgtOffset != null) return ov.chgtOffset;
-  return hasFrais ? offset : Math.max(0, offset - chgtDur);
+  var chgtInfo = _buildChgtBlocksForTour(tid, flux, ov, offset, chgtDur, hasFrais);
+  return chgtInfo.barLeft;
 }
 
 function _buildPlanningChargementModule(modId, toursOrdonnes, data) {
@@ -12074,14 +12328,15 @@ function _buildPlanningChargementModule(modId, toursOrdonnes, data) {
     var chgtDur = ov.chgtDur !== undefined ? +ov.chgtDur : (t ? (parseFloat(t[4]) || _chgtDurFallback(tid)) : _chgtDurFallback(tid));
     if (chgtDur <= 0) return;
     var hasFrais = flux.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase()) >= 0; });
-    var entrepot = (flux[0] && flux[0].entrepot) || (t && t[6] ? t[6].toString() : '') || 'ENTREPOT';
-    var debutChgt = _computeChargementDebut(tid);
-    var finChgt = debutChgt + chgtDur;
-    blocs.push({ tid: tid, debutChgt: debutChgt, finChgt: finChgt,
-                 entrepot: entrepot, hasFrais: hasFrais, chgtDur: chgtDur });
+    var offset = 6 * 60;
+    AppState.modules.forEach(function(m) { if (m.tours.indexOf(tid) >= 0) offset = AppState.modulesOffsets[m.id + '_' + tid] || offset; });
+    var chgtInfo = _buildChgtBlocksForTour(tid, flux, ov, offset, chgtDur, hasFrais);
+    chgtInfo.blocks.forEach(function(b) {
+      blocs.push({ tid: tid, debutChgt: b.debutChgt, finChgt: b.finChgt,
+                   entrepot: b.entrepot, hasFrais: hasFrais, chgtDur: b.chgtDur });
+    });
   });
   blocs.sort(function(a, b) { return a.debutChgt - b.debutChgt; });
-  // Algorithme glouton d'assignation de lanes
   var laneEnds = [];
   blocs.forEach(function(b) {
     var li = -1;
@@ -12177,56 +12432,150 @@ function rendreGanttRemorques(data) {
     badge.textContent = td.tid;
     bar.appendChild(badge);
 
-    if (td.chgtDur > 0) {
-      var isMobile = !td.hasFrais;
-      var segChgt = document.createElement('div');
-      segChgt.className = 'tour-seg ' + (td.hasFrais ? 'tour-seg-chgt' : 'tour-seg-chgt-ent') + (isMobile ? ' tour-seg-chgt-mobile' : '');
-      segChgt.style.left  = '0';
-      segChgt.style.width = (td.chgtDur * PPM) + 'px';
-      if (td.hasFrais) segChgt.style.borderColor = couleurDep;
-      segChgt.setAttribute('data-gtip', (td.hasFrais ? 'Chargement tracteur' : 'Chargement entrepôt ↔ déplaçable') + ' — ' + td.entrepotDep + ' — ' + td.chgtDur + 'min');
-      segChgt.textContent = td.hasFrais ? 'Chgt' : '↔Chgt';
-      segChgt.style.pointerEvents = 'auto';
-      if (isMobile) {
-        (function(t_id, t_data) {
+    if (td.chgtBlocks && td.chgtBlocks.length > 0) {
+      td.chgtBlocks.forEach(function(cb, cbIdx) {
+        var segChgt = document.createElement('div');
+        segChgt.className = 'tour-seg ' + (td.hasFrais ? 'tour-seg-chgt' : 'tour-seg-chgt-ent') + ' tour-seg-chgt-mobile';
+        segChgt.style.left  = ((cb.debutChgt - td.barLeft) * PPM) + 'px';
+        segChgt.style.width = (cb.chgtDur * PPM) + 'px';
+        if (td.hasFrais) segChgt.style.borderColor = getCouleurLieu(cb.entrepot);
+        segChgt.setAttribute('data-gtip', (td.hasFrais ? 'Chargement tracteur' : 'Chargement entrepôt') + ' ↔ déplaçable — ' + cb.entrepot + ' — ' + cb.chgtDur + 'min');
+        segChgt.textContent = (td.hasFrais ? 'Chgt' : '↔Chgt') + (td.isMultiEntrepot ? ' ' + cb.entrepot : '');
+        segChgt.style.pointerEvents = 'auto';
+
+        (function(t_id, t_td, t_cb, t_cbIdx) {
           segChgt.addEventListener('dblclick', function(e) {
             e.stopPropagation();
             var ov2 = AppState.tourneeOverrides[t_id] = AppState.tourneeOverrides[t_id] || {};
             delete ov2.chgtOffset;
+            delete ov2.chgtBlockStarts;
+            delete ov2.transferStarts;
+            delete ov2.transferStart;
             if (AppState.donnees) rendreGanttRemorques(AppState.donnees);
           });
           segChgt.addEventListener('mousedown', function(e) {
             if (e.button !== 0) return;
             e.stopPropagation(); e.preventDefault();
-            var ov2 = (AppState.tourneeOverrides && AppState.tourneeOverrides[t_id]) || {};
-            var chgtD = ov2.chgtDur !== undefined ? +ov2.chgtDur : (t_data ? (parseFloat(t_data[4]) || _chgtDurFallback(t_id)) : _chgtDurFallback(t_id));
             var modId2 = null;
             AppState.modules.forEach(function(m) { if (m.tours.indexOf(t_id) >= 0) modId2 = m.id; });
             var off2 = modId2 ? (AppState.modulesOffsets[modId2 + '_' + t_id] || 6 * 60) : 6 * 60;
+            var allBlocks = t_td.chgtBlocks;
+            var nB = allBlocks.length;
+            var trBlocks = t_td.transferBlocks || [];
+            // Contrainte : rester entre les blocs de délai route encadrants (préserve l'ordre)
+            // minAt = fin du délai route précédent (ou 6h si premier bloc)
+            // maxAt = début du délai route suivant − chgtDur (ou maxAtDef si dernier bloc)
+            var minAt = t_cbIdx > 0 ? (trBlocks[t_cbIdx - 1] ? trBlocks[t_cbIdx - 1].finChgt : allBlocks[t_cbIdx - 1].finChgt) : 6 * 60;
+            var maxAtDef = t_td.hasFrais ? (24 * 60) : Math.max(6 * 60, off2 - t_cb.chgtDur);
+            var maxAt = t_cbIdx < nB - 1 ? Math.min(maxAtDef, (trBlocks[t_cbIdx] ? trBlocks[t_cbIdx].debutChgt : allBlocks[t_cbIdx + 1].debutChgt) - t_cb.chgtDur) : maxAtDef;
             AppState._chgtDragState = {
               tid: t_id, startX: e.clientX,
-              origChgtDebut: _computeChargementDebut(t_id),
-              chgtDur: chgtD, debutH: debutH, PPM: PPM,
-              minAt: 6 * 60,
-              maxAt: Math.max(6 * 60, off2 - chgtD),
+              origChgtDebut: t_cb.debutChgt,
+              blockIdx: t_cbIdx,
+              allBlocks: t_td.chgtBlocks,
+              chgtDur: t_cb.chgtDur,
+              debutH: debutH, PPM: PPM,
+              minAt: minAt,
+              maxAt: maxAt,
               div: segChgt
             };
             segChgt.classList.add('chgt-dragging');
           });
-        })(td.tid, td.t);
+        })(td.tid, td, cb, cbIdx);
+
+        (function(el) {
+          el.addEventListener('mouseover', function(e) { _showGanttTip(e, el.getAttribute('data-gtip')); });
+          el.addEventListener('mousemove', _moveGanttTip);
+          el.addEventListener('mouseout', _hideGanttTip);
+        })(segChgt);
+        bar.appendChild(segChgt);
+
+      });
+
+      // Blocs de transfert inter-entrepôts — un par paire consécutive (N-1 blocs)
+      if (td.transferBlocks && td.transferBlocks.length > 0) {
+        td.transferBlocks.forEach(function(tb, tbIdx) {
+          var segTr = document.createElement('div');
+          segTr.className = 'tour-seg tour-seg-transfer tour-seg-chgt-mobile';
+          segTr.style.left  = ((tb.debutChgt - td.barLeft) * PPM) + 'px';
+          segTr.style.width = (TRANSFER_DELAY_MULTI_ENT * PPM) + 'px';
+          segTr.style.cursor = 'ew-resize';
+          segTr.setAttribute('data-gtip', 'Délai de route ↔ déplaçable — ' + TRANSFER_DELAY_MULTI_ENT + 'min');
+          segTr.textContent = TRANSFER_DELAY_MULTI_ENT + '\'';
+          segTr.style.pointerEvents = 'auto';
+          (function(t_id, t_td, el, t_tbIdx) {
+            el.addEventListener('dblclick', function(e) {
+              e.stopPropagation();
+              var ov2 = AppState.tourneeOverrides[t_id] = AppState.tourneeOverrides[t_id] || {};
+              if (ov2.transferStarts) {
+                var ts2 = ov2.transferStarts.slice();
+                ts2[t_tbIdx] = undefined;
+                ov2.transferStarts = ts2.some(function(x) { return x != null; }) ? ts2 : undefined;
+                if (!ov2.transferStarts) delete ov2.transferStarts;
+              }
+              delete ov2.transferStart;
+              if (AppState.donnees) rendreGanttRemorques(AppState.donnees);
+            });
+            el.addEventListener('mousedown', function(e) {
+              if (e.button !== 0) return;
+              e.stopPropagation(); e.preventDefault();
+              var bBefore = t_td.chgtBlocks[t_tbIdx];
+              var bAfter  = t_td.chgtBlocks[t_tbIdx + 1];
+              var minAt = bBefore ? bBefore.finChgt : 6 * 60;
+              var maxAt = bAfter ? Math.max(minAt, bAfter.debutChgt - TRANSFER_DELAY_MULTI_ENT) : (24 * 60);
+              AppState._transferDragState = {
+                tid: t_id, startX: e.clientX,
+                origStart: tb.debutChgt,
+                transferIdx: t_tbIdx,
+                debutH: debutH, PPM: PPM,
+                minAt: minAt, maxAt: maxAt,
+                div: el
+              };
+              el.classList.add('chgt-dragging');
+            });
+            el.addEventListener('mouseover', function(e) { _showGanttTip(e, el.getAttribute('data-gtip')); });
+            el.addEventListener('mousemove', _moveGanttTip);
+            el.addEventListener('mouseout', _hideGanttTip);
+          })(td.tid, td, segTr, tbIdx);
+          bar.appendChild(segTr);
+        });
       }
-      (function(el) {
-        el.addEventListener('mouseover', function(e) { _showGanttTip(e, el.getAttribute('data-gtip')); });
-        el.addEventListener('mousemove', _moveGanttTip);
-        el.addEventListener('mouseout', _hideGanttTip);
-      })(segChgt);
-      bar.appendChild(segChgt);
+
+      // Boutons de permutation — un par paire consécutive d'entrepôts (N-1 boutons)
+      if (td.isMultiEntrepot) {
+        for (var swapI = 0; swapI < td.chgtBlocks.length - 1; swapI++) {
+          (function(t_id, t_td, t_swapI) {
+            var swapBtn = document.createElement('button');
+            swapBtn.className = 'chgt-swap-btn';
+            var ep0 = t_td.chgtBlocks[t_swapI].entrepot;
+            var ep1 = t_td.chgtBlocks[t_swapI + 1].entrepot;
+            swapBtn.title = 'Permuter ' + ep0 + ' ⇔ ' + ep1;
+            swapBtn.textContent = '⇄';
+            // Positionné à la jonction entre le bloc[i] et son délai de route
+            var _swapLeft = (t_td.chgtBlocks[t_swapI].finChgt - t_td.barLeft) * PPM + 2;
+            swapBtn.style.left = Math.max(2, _swapLeft) + 'px';
+            swapBtn.addEventListener('click', function(e) {
+              e.stopPropagation();
+              var ov2 = AppState.tourneeOverrides[t_id] = AppState.tourneeOverrides[t_id] || {};
+              var curOrder = t_td.chgtBlocks.map(function(b) { return b.entrepot; });
+              // Permuter les entrepôts i et i+1
+              var tmp = curOrder[t_swapI]; curOrder[t_swapI] = curOrder[t_swapI + 1]; curOrder[t_swapI + 1] = tmp;
+              ov2.chgtEntrepotsOrder = curOrder;
+              delete ov2.chgtBlockStarts;
+              delete ov2.transferStarts;
+              delete ov2.transferStart;
+              if (AppState.donnees) rendreGanttRemorques(AppState.donnees);
+            });
+            bar.appendChild(swapBtn);
+          })(td.tid, td, swapI);
+        }
+      }
     }
 
     var segAdm = document.createElement('div');
     segAdm.className = 'tour-seg';
     segAdm.style.background = couleurDep;
-    segAdm.style.left  = (td.hasFrais ? td.chgtDur : (td.offset - td.barLeft)) * PPM + 'px';
+    segAdm.style.left  = (td.hasFrais ? (td.tractorStart - td.barLeft - td.admDur) : (td.offset - td.barLeft)) * PPM + 'px';
     segAdm.style.width = (td.admDur * PPM) + 'px';
     segAdm.setAttribute('data-gtip', 'Accrochage — ' + td.entrepotDep + ' — ' + td.admDur + 'min');
     var _ra1 = document.createElement('span'); _ra1.textContent = td.entrepotDep;
@@ -12302,13 +12651,17 @@ function rendreGanttRemorques(data) {
     var flux     = AppState.planLocal[tid] || [];
     var hasFrais = flux.some(function(f) { return TYPES_AVEC_TRACTOR_CHGT.indexOf((f.marchandise||'').toUpperCase()) >= 0; });
     var entrepotDep = (flux[0] && flux[0].entrepot) || (t && t[6] ? t[6].toString() : '') || 'ENTREPOT';
-    var barLeft = _computeChargementDebut(tid);
-    var tractorStart = hasFrais ? (offset + chgtDur + admDur) : (offset + admDur);
+    var chgtInfo = _buildChgtBlocksForTour(tid, flux, ov, offset, chgtDur, hasFrais);
+    var barLeft = chgtInfo.barLeft;
+    var totalChgtDur = chgtInfo.totalChgtDur;
+    var tractorStart = hasFrais ? (chgtInfo.tractorChgtEnd + admDur) : (offset + admDur);
     var blocs = calculerPlanningGantt(tractorStart, flux, distMap, reglesDech, retourPt, admDur, entrepotDep);
     var barEnd = blocs.length > 0 ? blocs[blocs.length-1].debut + blocs[blocs.length-1].duree : tractorStart + 30;
     return { tid: tid, t: t, ov: ov, offset: offset, chgtDur: chgtDur, admDur: admDur,
              retourPt: retourPt, flux: flux, hasFrais: hasFrais, entrepotDep: entrepotDep,
-             barLeft: barLeft, tractorStart: tractorStart, blocs: blocs, barEnd: barEnd };
+             barLeft: barLeft, tractorStart: tractorStart, blocs: blocs, barEnd: barEnd,
+             chgtBlocks: chgtInfo.blocks, transferBlocks: chgtInfo.transferBlocks, transferBlock: chgtInfo.transferBlock,
+             totalChgtDur: totalChgtDur, isMultiEntrepot: chgtInfo.isMulti, nBlocks: chgtInfo.nBlocks };
   }
 
   var bilanModules = [];
@@ -12515,14 +12868,18 @@ function rendreGanttRemorques(data) {
       _bepGet(ep).variation -= 1;
       _bepGet(effectiveRet).variation += 1;
 
-      // Événement chargement
-      if (td.chgtDur > 0) {
-        var _firstMag = '';
-        for (var _fi = 0; _fi < td.flux.length; _fi++) {
-          if (!td.flux[_fi].isNavette && td.flux[_fi].magasin) { _firstMag = td.flux[_fi].magasin; break; }
-        }
-        var _utTour = Math.round(td.flux.reduce(function(s,f){ return s+(parseFloat(f.utAffecte!==undefined?f.utAffecte:f.ut)||0); },0)*10)/10;
-        _bepGet(ep).events.push({ type: 'chgt', tid: tid, debut: td.barLeft, fin: td.barLeft + td.chgtDur, duree: td.chgtDur, premierMagasin: _firstMag, ut: _utTour });
+      // Événements chargement — un par entrepôt (multi-entrepôt dans même zone autorisé)
+      if (td.chgtBlocks && td.chgtBlocks.length > 0) {
+        td.chgtBlocks.forEach(function(cb) {
+          var _fluxEp = td.flux.filter(function(f) { return f.entrepot === cb.entrepot; });
+          if (_fluxEp.length === 0) _fluxEp = td.flux; // fallback si entrepôt non discriminé
+          var _firstMagEp = '';
+          for (var _fi = 0; _fi < _fluxEp.length; _fi++) {
+            if (!_fluxEp[_fi].isNavette && _fluxEp[_fi].magasin) { _firstMagEp = _fluxEp[_fi].magasin; break; }
+          }
+          var _utEp = Math.round(_fluxEp.reduce(function(s,f){ return s+(parseFloat(f.utAffecte!==undefined?f.utAffecte:f.ut)||0); },0)*10)/10;
+          _bepGet(cb.entrepot).events.push({ type: 'chgt', tid: tid, debut: cb.debutChgt, fin: cb.finChgt, duree: cb.chgtDur, premierMagasin: _firstMagEp, ut: _utEp });
+        });
       }
 
       // Événement déchargement navette (marchandise seulement, ut > 0)
@@ -13482,7 +13839,7 @@ document.addEventListener('DOMContentLoaded', function() {
     _onCisailleClick(seg, e);
   });
   document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape' && AppState._cisailleMode) toggleCisailleMode();
+    if (e.key === 'Escape' && AppState._cisailleMode) _desactiverCisaille();
   });
 
   // ── Drag des blocs Gantt — repositionnement par pas de 15 min ──
@@ -13555,6 +13912,29 @@ document.addEventListener('DOMContentLoaded', function() {
       return;
     }
 
+    // Drag délai de route 15min (Gantt Remorques) — contraint entre les deux blocs de chargement
+    var trd = AppState._transferDragState;
+    if (trd) {
+      var deltaXtr = e.clientX - trd.startX;
+      var newTrStart = trd.origStart + deltaXtr / trd.PPM;
+      newTrStart = Math.round(newTrStart / 15) * 15;
+      newTrStart = Math.max(trd.minAt, Math.min(trd.maxAt != null ? trd.maxAt : Infinity, newTrStart));
+      trd._currentStart = newTrStart;
+      var barLeftPxTr = parseFloat(trd.div.parentNode ? trd.div.parentNode.style.left || 0 : 0);
+      var barLeftMinTr = barLeftPxTr / trd.PPM + trd.debutH * 60;
+      trd.div.style.left = Math.max(0, (newTrStart - barLeftMinTr) * trd.PPM) + 'px';
+      if (!_ganttDragTooltip) {
+        _ganttDragTooltip = document.createElement('div');
+        _ganttDragTooltip.style.cssText = 'position:fixed;background:#E65100;color:#fff;padding:3px 9px;border-radius:5px;font-size:12px;font-weight:700;z-index:9999;pointer-events:none;white-space:nowrap';
+        document.body.appendChild(_ganttDragTooltip);
+      }
+      _ganttDragTooltip.textContent = '→ Délai route ' + minutesVersHeure(newTrStart);
+      _ganttDragTooltip.style.left = (e.clientX + 14) + 'px';
+      _ganttDragTooltip.style.top  = (e.clientY - 32) + 'px';
+      _ganttDragTooltip.style.display = 'block';
+      return;
+    }
+
     // Drag pause chauffeur (ou bloc gap)
     var pd = AppState._pauseDragState;
     if (pd) {
@@ -13605,14 +13985,40 @@ document.addEventListener('DOMContentLoaded', function() {
   document.addEventListener('mouseup', function() {
     if (_ganttDragTooltip) _ganttDragTooltip.style.display = 'none';
 
-    // Fin drag chargement PGC/NAL
+    // Fin drag délai de route 15min
+    var trd = AppState._transferDragState;
+    if (trd) {
+      AppState._transferDragState = null;
+      trd.div.classList.remove('chgt-dragging');
+      if (trd._currentStart != null) {
+        var ov3 = AppState.tourneeOverrides[trd.tid] = AppState.tourneeOverrides[trd.tid] || {};
+        var tIdx = trd.transferIdx || 0;
+        var tStarts = ov3.transferStarts ? ov3.transferStarts.slice() : [];
+        tStarts[tIdx] = trd._currentStart;
+        ov3.transferStarts = tStarts;
+        delete ov3.transferStart; // migration legacy
+      }
+      if (AppState.donnees) rendreGanttRemorques(AppState.donnees);
+      return;
+    }
+
+    // Fin drag bloc chargement (individuel ou groupe)
     var cd = AppState._chgtDragState;
     if (cd) {
       AppState._chgtDragState = null;
       cd.div.classList.remove('chgt-dragging');
       if (cd._currentDebut != null) {
         AppState.tourneeOverrides[cd.tid] = AppState.tourneeOverrides[cd.tid] || {};
-        AppState.tourneeOverrides[cd.tid].chgtOffset = cd._currentDebut;
+        var ov2 = AppState.tourneeOverrides[cd.tid];
+        if (cd.blockIdx != null) {
+          // Drag individuel : mettre à jour la position de ce bloc dans chgtBlockStarts
+          var starts = ov2.chgtBlockStarts ? ov2.chgtBlockStarts.slice() : cd.allBlocks.map(function(b) { return b.debutChgt; });
+          starts[cd.blockIdx] = cd._currentDebut;
+          ov2.chgtBlockStarts = starts;
+        } else {
+          // Drag groupe (legacy)
+          ov2.chgtOffset = cd._currentDebut;
+        }
       }
       if (AppState.donnees) rendreGanttRemorques(AppState.donnees);
       return;
