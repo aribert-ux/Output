@@ -6163,6 +6163,12 @@ function calculerShifts(mod, toursOrdonnes, blocsMap, splits) {
         // Nouveau sous-segment démarrant après le dernier changement_chauffeur du tid
         var lastCC = ccBlocs[ccBlocs.length - 1];
         splitFrom = lastCC.debut + lastCC.duree;
+        // Si un délai de reprise est défini, le shift du 2ᵉ chauffeur démarre à repriseMin
+        var _csArrSh = AppState.chauffeurSplits[mod.id + '_' + tid] || [];
+        var _csMatchSh = _csArrSh.filter(function(cs) { return cs._id === lastCC._splitId; });
+        if (_csMatchSh.length && _csMatchSh[0].repriseMin != null && _csMatchSh[0].repriseMin > splitFrom) {
+          splitFrom = _csMatchSh[0].repriseMin;
+        }
         var seg2 = [tid];
         seg2._splitFrom = splitFrom;
         curSub = seg2;
