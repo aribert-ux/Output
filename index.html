@@ -3540,7 +3540,7 @@ function afficherPanelTournees(modId) {
       var _magB = flux[_fi + 1].magasin || flux[_fi + 1].lieu || '';
       if (!_magA || !_magB || _magA === _magB) continue;
       var _de = getDistEntryGlobal(_magA, _magB, _dmPanel);
-      if (_de && _de.m === 0) {
+      if (!_de || _de.m <= 15) {
         var _pkey = fusionPairKey(_magA, _magB);
         if (!_fusionablePairs.some(function(p) { return fusionPairKey(p[0], p[1]) === _pkey; }))
           _fusionablePairs.push([_magA, _magB]);
@@ -5701,6 +5701,10 @@ function _executerTransfertAtelier(targetModId) {
       AppState.pauseOverrides[newPauseKey] = AppState.pauseOverrides[oldPauseKey];
       delete AppState.pauseOverrides[oldPauseKey];
     }
+    if (AppState.chauffeurSplits && AppState.chauffeurSplits['M0_' + tid]) {
+      AppState.chauffeurSplits[targetModId + '_' + tid] = AppState.chauffeurSplits['M0_' + tid];
+      delete AppState.chauffeurSplits['M0_' + tid];
+    }
   });
   if (AppState.shiftSplits && AppState.shiftSplits['M0'] && AppState.shiftSplits['M0'].length) {
     if (!AppState.shiftSplits[targetModId]) AppState.shiftSplits[targetModId] = [];
@@ -5761,6 +5765,11 @@ function transfererAtelier(btn) {
 
 function assignerTourneeModule(modId, tid, offsetMin) {
   var _allMods = [AppState.moduleM0].concat(AppState.modules);
+  // Capturer l'ancien module et offset avant suppression pour migration du changement de chauffeur
+  var _csOldModId = null, _csOldOffset = null;
+  _allMods.forEach(function(m) {
+    if (m.tours.indexOf(tid) >= 0) { _csOldModId = m.id; _csOldOffset = AppState.modulesOffsets[m.id + '_' + tid]; }
+  });
   _allMods.forEach(function(m) {
     var idx = m.tours.indexOf(tid);
     if (idx >= 0) { m.tours.splice(idx, 1); delete AppState.modulesOffsets[m.id + '_' + tid]; }
@@ -5768,8 +5777,24 @@ function assignerTourneeModule(modId, tid, offsetMin) {
   var mod = _allMods.filter(function(m) { return m.id === modId; })[0];
   if (mod) {
     mod.tours.push(tid);
-    AppState.modulesOffsets[modId + '_' + tid] = (offsetMin !== undefined && !isNaN(offsetMin))
-      ? Math.max(0, offsetMin) : lireOffsetTournee(tid);
+    var _newOffset = (offsetMin !== undefined && !isNaN(offsetMin)) ? Math.max(0, offsetMin) : lireOffsetTournee(tid);
+    AppState.modulesOffsets[modId + '_' + tid] = _newOffset;
+    // Migrer le changement de chauffeur vers le nouveau module en décalant de la même différence d'offset
+    if (_csOldModId && AppState.chauffeurSplits) {
+      var _csOldKey = _csOldModId + '_' + tid;
+      var _csNewKey = modId + '_' + tid;
+      if (AppState.chauffeurSplits[_csOldKey]) {
+        var _csDelta = _newOffset - (_csOldOffset != null ? _csOldOffset : _newOffset);
+        AppState.chauffeurSplits[_csNewKey] = AppState.chauffeurSplits[_csOldKey];
+        delete AppState.chauffeurSplits[_csOldKey];
+        if (_csDelta !== 0) {
+          AppState.chauffeurSplits[_csNewKey].forEach(function(cs) {
+            cs.atMin += _csDelta;
+            if (cs.repriseMin != null) cs.repriseMin += _csDelta;
+          });
+        }
+      }
+    }
   }
   if (AppState.donnees) rendreGantt(AppState.donnees);
 }
@@ -14083,6 +14108,20 @@ document.addEventListener('DOMContentLoaded', function() {
             if (AppState.donnees) rendreGantt(AppState.donnees);
             return;
           }
+          // Migrer et décaler le changement de chauffeur
+          var _csInterOldKey = bd.modId + '_' + bd.tid;
+          var _csInterNewKey = bd._targetModId + '_' + bd.tid;
+          var _csDeltaInter  = newOff - bd.startOff;
+          if (AppState.chauffeurSplits && AppState.chauffeurSplits[_csInterOldKey]) {
+            AppState.chauffeurSplits[_csInterNewKey] = AppState.chauffeurSplits[_csInterOldKey];
+            delete AppState.chauffeurSplits[_csInterOldKey];
+            if (_csDeltaInter !== 0) {
+              AppState.chauffeurSplits[_csInterNewKey].forEach(function(cs) {
+                cs.atMin += _csDeltaInter;
+                if (cs.repriseMin != null) cs.repriseMin += _csDeltaInter;
+              });
+            }
+          }
         }
       } else {
         // ── Repositionnement dans le même module ──────────────
@@ -14100,6 +14139,15 @@ document.addEventListener('DOMContentLoaded', function() {
           afficherToast('🚫 Position invalide : navette arrive à ' + minutesVersHeure(Math.round(_nvViolRepo[0].navetteFin)) + ', flux dérivé part à ' + minutesVersHeure(Math.round(_nvViolRepo[0].deriveTractorStart)), 'erreur');
           if (AppState.donnees) rendreGantt(AppState.donnees);
           return;
+        }
+        // Décaler le changement de chauffeur du même delta que la tournée
+        var _csDeltaRepo = newOff - bd.startOff;
+        var _csSameKey   = bd.modId + '_' + bd.tid;
+        if (_csDeltaRepo !== 0 && AppState.chauffeurSplits && AppState.chauffeurSplits[_csSameKey]) {
+          AppState.chauffeurSplits[_csSameKey].forEach(function(cs) {
+            cs.atMin += _csDeltaRepo;
+            if (cs.repriseMin != null) cs.repriseMin += _csDeltaRepo;
+          });
         }
       }
 
