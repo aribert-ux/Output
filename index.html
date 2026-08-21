@@ -8715,28 +8715,66 @@ function _afOpt_phase05_navettes(fluxList, dm, jour) {
 // PHASE 1.1 — FFD par famille / entrepôt
 // ══════════════════════════════════════════════════════════════════
 
-function _afOpt_phase1_ffd(fluxList) {
-  var CAP    = 33;
-  var sorted = fluxList.slice().sort(function(a, b) { return b.ut - a.ut; });
+function _afOpt_phase1_ffd(fluxList, dm) {
+  var CAP = 33;
+
+  // Regroupement par entrepôt de départ
+  var byEntrepot = {};
+  fluxList.forEach(function(flux) {
+    var key = flux.entrepot || '';
+    if (!byEntrepot[key]) byEntrepot[key] = [];
+    byEntrepot[key].push(flux);
+  });
+
+  // Pour chaque entrepôt : tri nearest-neighbor des magasins depuis l'entrepôt,
+  // puis flux triés par UT décroissant au sein de chaque magasin.
+  var sorted = [];
+  Object.keys(byEntrepot).sort().forEach(function(entrepot) {
+    var fluxGroup = byEntrepot[entrepot];
+
+    // Collecter les magasins uniques et leurs flux
+    var magasinsMap = {};
+    fluxGroup.forEach(function(flux) {
+      var m = flux.magasin || '';
+      if (!magasinsMap[m]) magasinsMap[m] = [];
+      magasinsMap[m].push(flux);
+    });
+    var magasins = Object.keys(magasinsMap);
+
+    // Ordre nearest-neighbor depuis l'entrepôt
+    var unvisited = magasins.slice();
+    var ordered   = [];
+    var current   = entrepot;
+    while (unvisited.length > 0) {
+      var bestIdx  = 0;
+      var bestDist = Infinity;
+      for (var i = 0; i < unvisited.length; i++) {
+        var d    = _afOpt_getDist(dm, current, unvisited[i]);
+        var dist = d ? d.m : Infinity;
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+      }
+      var chosen = unvisited.splice(bestIdx, 1)[0];
+      ordered.push(chosen);
+      current = chosen;
+    }
+
+    ordered.forEach(function(mag) {
+      magasinsMap[mag].sort(function(a, b) { return b.ut - a.ut; }).forEach(function(f) { sorted.push(f); });
+    });
+  });
+
   var groupes = [];
 
   sorted.forEach(function(flux) {
-    var famille = _afOpt_getFamille(flux.marchandise);
-    var placed  = false;
+    var famille  = _afOpt_getFamille(flux.marchandise);
+    var fluxZone = flux.zoneEntrepot || flux.entrepot || '';
 
-    for (var gi = 0; gi < groupes.length; gi++) {
-      var g = groupes[gi];
-      if (g.entrepot !== flux.entrepot) continue;
-      if (g.utTotal + flux.ut > CAP + 0.01) continue;
-      var testFlux = g.flux.concat([flux]);
-      if (typeof validerCompatibiliteMarchandises === 'function') {
-        if (!validerCompatibiliteMarchandises(testFlux).valide) continue;
-      }
-      g.flux.push({
+    function makeEntry(utAffecte) {
+      return {
         magasin:          flux.magasin,
         marchandise:      flux.marchandise,
         ut:               flux.ut,
-        utAffecte:        flux.ut,
+        utAffecte:        utAffecte,
         entrepot:         flux.entrepot,
         zoneEntrepot:     flux.zoneEntrepot     || '',
         embDelai:         flux.embDelai         || 0,
@@ -8744,32 +8782,51 @@ function _afOpt_phase1_ffd(fluxList) {
         _navFluxId:       flux._navFluxId       || null,
         _navetteId:       flux._navetteId       || null,
         _arriveeNavMin:   flux._arriveeNavMin   || 0
-      });
-      g.utTotal += flux.ut;
-      placed = true;
-      break;
+      };
     }
 
-    if (!placed) {
+    // Tente de placer flux dans un groupe éligible.
+    // requireSamePair = true : priorité absolue aux groupes livrant déjà le même (entrepôt exact, magasin).
+    //   → Pas de filtre zone : la correspondance exacte (entrepôt + magasin) suffit.
+    // requireSamePair = false : FFD normal filtré par zone logistique.
+    function tryPlace(mode) {
+      for (var gi = 0; gi < groupes.length; gi++) {
+        var g = groupes[gi];
+        if (mode === 1) {
+          var hasPair = g.flux.some(function(f) {
+            return f.entrepot === flux.entrepot && f.magasin === flux.magasin;
+          });
+          if (!hasPair) continue;
+        } else if (mode === 2) {
+          var hasZoneMag = g.flux.some(function(f) {
+            return (f.zoneEntrepot || f.entrepot || '') === fluxZone && f.magasin === flux.magasin;
+          });
+          if (!hasZoneMag) continue;
+        } else {
+          if (g.zone !== fluxZone) continue;
+        }
+        if (g.utTotal + flux.ut > CAP + 0.01) continue;
+        if (typeof validerCompatibiliteMarchandises === 'function') {
+          if (!validerCompatibiliteMarchandises(g.flux.concat([flux])).valide) continue;
+        }
+        g.flux.push(makeEntry(flux.ut));
+        g.utTotal += flux.ut;
+        return true;
+      }
+      return false;
+    }
+
+    // Passe 1 : même entrepôt exact + même magasin
+    // Passe 2 : même zone logistique + même magasin
+    // Passe 3 : même zone logistique (FFD normal)
+    if (!tryPlace(1) && !tryPlace(2) && !tryPlace(3)) {
       var utPlace = Math.min(flux.ut, CAP);
       groupes.push({
         famille:  famille,
         entrepot: flux.entrepot,
-        zone:     flux.zoneEntrepot || flux.entrepot || '',
+        zone:     fluxZone,
         utTotal:  utPlace,
-        flux: [{
-          magasin:          flux.magasin,
-          marchandise:      flux.marchandise,
-          ut:               flux.ut,
-          utAffecte:        utPlace,
-          entrepot:         flux.entrepot,
-          zoneEntrepot:     flux.zoneEntrepot     || '',
-          embDelai:         flux.embDelai         || 0,
-          _isFluxNavettise: flux._isFluxNavettise || false,
-          _navFluxId:       flux._navFluxId       || null,
-          _navetteId:       flux._navetteId       || null,
-          _arriveeNavMin:   flux._arriveeNavMin   || 0
-        }]
+        flux:     [makeEntry(utPlace)]
       });
     }
   });
@@ -8803,6 +8860,13 @@ function _afOpt_phase1_fractionner(groupes, fluxOriginaux) {
     for (var gi = 0; gi < groupes.length && rest > 0.01; gi++) {
       var g     = groupes[gi];
       if (g.entrepot !== fluxSrc.entrepot) continue;
+      // Ne compléter que les groupes contenant déjà ce magasin/marchandise
+      // pour éviter d'éparpiller un résidu important en petites fractions
+      // dans des groupes sans rapport (ce qui crée des livraisons perdues)
+      var hasSamePair = g.flux.some(function(f) {
+        return f.magasin === fluxSrc.magasin && f.marchandise === fluxSrc.marchandise;
+      });
+      if (!hasSamePair) continue;
       var libre = Math.round((CAP - g.utTotal) * 10) / 10;
       if (libre <= 0.01) continue;
       var testFlux = g.flux.concat([fluxSrc]);
@@ -8848,7 +8912,50 @@ function _afOpt_phase1_fractionner(groupes, fluxOriginaux) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// PHASE 1.2b — Filtre durée maximale de tournée (≤ 11h)
+// PHASE 1.2b — Consolidation : fusion des groupes partageant un couple (entrepôt, magasin)
+// Corrige les cas où le FFD place deux flux du même couple dans des groupes distincts
+// parce que le premier groupe était presque plein au moment du placement.
+// ══════════════════════════════════════════════════════════════════
+
+function _afOpt_phase1_consolider(groupes) {
+  var CAP = 33;
+  var changed = true;
+  while (changed) {
+    changed = false;
+    var merged = false;
+    for (var i = 0; i < groupes.length && !merged; i++) {
+      var ga = groupes[i];
+      for (var fi = 0; fi < ga.flux.length && !merged; fi++) {
+        var fa = ga.flux[fi];
+        for (var j = i + 1; j < groupes.length && !merged; j++) {
+          var gb = groupes[j];
+          // Les deux groupes partagent-ils un couple (entrepôt, magasin) ?
+          var hasPair = gb.flux.some(function(fb) {
+            return fb.entrepot === fa.entrepot && fb.magasin === fa.magasin;
+          });
+          if (!hasPair) continue;
+          // Vérifier la capacité
+          if (Math.round((ga.utTotal + gb.utTotal) * 10) / 10 > CAP + 0.01) continue;
+          // Vérifier la compatibilité marchandises
+          var combinedFlux = ga.flux.concat(gb.flux);
+          if (typeof validerCompatibiliteMarchandises === 'function') {
+            if (!validerCompatibiliteMarchandises(combinedFlux).valide) continue;
+          }
+          // Fusionner gb dans ga
+          ga.flux    = combinedFlux;
+          ga.utTotal = Math.round((ga.utTotal + gb.utTotal) * 10) / 10;
+          groupes.splice(j, 1);
+          changed = true;
+          merged  = true;
+        }
+      }
+    }
+  }
+  return groupes;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PHASE 1.2c — Filtre durée maximale de tournée (≤ 11h)
 // ══════════════════════════════════════════════════════════════════
 
 var _DUREE_MAX_TOURNEE = 660; // 11h = 660 min
@@ -10435,7 +10542,7 @@ function autoFillOptimise() {
       var fluxList = _afOpt_collectFlux(AppState.donnees, _opt_jour);
       _afOpt_updateProgress(0.05, 'Phase 1 - FFD groupement (' + fluxList.length + ' flux)...');
 
-      _opt_groupes         = _afOpt_phase1_ffd(fluxList);
+      _opt_groupes         = _afOpt_phase1_ffd(fluxList, _opt_dm);
       _opt_groupes         = _afOpt_phase1_fractionner(_opt_groupes, fluxList);
       _opt_groupesValides   = [];
       _opt_groupesInvalides = [];
